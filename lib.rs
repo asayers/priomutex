@@ -12,19 +12,18 @@ use std::collections::BinaryHeap;
 use std::ptr;
 use std::sync::atomic::{self, AtomicPtr};
 use std::sync::{mpsc, Arc};
+use std::thread::{self, Thread};
 
 /// A baton encapsulates some state which may be passed around between the threads in a thread
 /// pool.
 pub struct Baton<T> {
     // When releasing, first check to see if there are any waiting threads to hand the baton to...
-    queue_rx: mpsc::Receiver<WorkerHandle<T>>,
-    heap: BinaryHeap<WorkerHandle<T>>,
+    queue_rx: mpsc::Receiver<WithPrio<Thread>>,
+    heap: BinaryHeap<WithPrio<Thread>>,
     // ...and if not, free the baton.
     slot: Arc<AtomicPtr<Baton<T>>>,
     pub inner: T,
 }
-
-type WorkerHandle<T> = WithPrio<mpsc::SyncSender<Baton<T>>>;
 
 struct WithPrio<T> {
     prio: usize,
@@ -46,7 +45,7 @@ pub struct Handle<T> {
     // When locking, check this first to see if the baton is free...
     slot: Arc<AtomicPtr<Baton<T>>>,
     // ...and if not, send a work handle to the active thread.
-    queue_tx: mpsc::Sender<WorkerHandle<T>>,
+    queue_tx: mpsc::Sender<WithPrio<Thread>>,
 }
 impl<T> Clone for Handle<T> {
     fn clone(&self) -> Self {
@@ -93,29 +92,19 @@ impl<T> Baton<T> {
             self.heap.push(x);
         }
         // And take the max priority element
-        match self.heap.pop() {
-            Some(h) => {
-                // Ok, we have another thread waiting to take over. Let's hand it the baton!
-                match h.inner.try_send(self) {
-                    Ok(()) => { /* ok! */ }
-                    Err(mpsc::TrySendError::Disconnected(_)) =>
-                        panic!("Impossible: A thread has put a tx on the queue and dropped the rx.
-                               There must be a bug in Handle::tag_in."),
-                    Err(mpsc::TrySendError::Full(_)) =>
-                        panic!("Impossible: The mvar is already full, but only one baton exists!"),
-                }
-            }
-            None => {
-                // There are no other threads waiting. Let's free the baton!
-                let slot = self.slot.clone();
-                let baton = Box::new(self);
-                let old = slot.compare_and_swap(ptr::null_mut(),
-                                               Box::into_raw(baton),
-                                               atomic::Ordering::Relaxed); // TODO: is Relaxed ok?
-                if old != ptr::null_mut() {
-                    panic!("Impossible: slot wasn't null!");
-                }
-            }
+        let next_thread = self.heap.pop();
+
+        // Free the baton
+        let slot = self.slot.clone();
+        let baton = Box::new(self);
+        let old = slot.compare_and_swap(ptr::null_mut(),
+                                       Box::into_raw(baton),
+                                       atomic::Ordering::Relaxed); // TODO: is Relaxed ok?
+        assert!(old == ptr::null_mut(), "Impossible: slot wasn't null!");
+
+        if let Some(h) = next_thread {
+            // We have another thread waiting to take over. Let's wake it up.
+            h.inner.unpark();
         }
     }
 }
@@ -128,27 +117,23 @@ impl<T> Handle<T> {
     // TODO: Consume self, and return the handle when calling tag_out, in order to prevent
     // deadlocks.
     pub fn tag_in(&self, prio: usize) -> Result<Baton<T>, Error> {
-        // First check if the baton is free
-        let x = self.slot.swap(ptr::null_mut(), atomic::Ordering::Relaxed); // TODO: Relaxed?
-        if x != ptr::null_mut() {
-            // It's free!
-            let baton = unsafe { Box::from_raw(x) };
-            Ok(*baton)
-        } else {
-            // The baton is currently held by another thread.
-            // Create an mvar and send it to the active thread.
-            let (tx, rx) = mpsc::sync_channel::<Baton<T>>(1);
-            match self.queue_tx.send(WithPrio{ prio: prio, inner: tx }) {
-                Ok(()) => {}
-                Err(mpsc::SendError(_)) => return Err(Error::BatonIsGone),
-            }
-            // Wait for the mvar to be filled.
-            match rx.recv() {
-                Ok(x) => Ok(x),
-                Err(mpsc::RecvError) =>
-                    // This case is triggered when (a) the baton is dropped, or (b) the baton-holder
-                    // pops tx and then drops it.  (b) is impossible, so it must be (a).
-                    Err(Error::BatonIsGone),
+        loop {
+            // First check if the baton is free
+            let x = self.slot.swap(ptr::null_mut(), atomic::Ordering::Relaxed); // TODO: Relaxed?
+            if x != ptr::null_mut() {
+                // It's free!
+                let baton = unsafe { Box::from_raw(x) };
+                return Ok(*baton)
+            } else {
+                // The baton is currently held by another thread.  Let's create a handle for waking
+                // this thread, and send it to the active thread.
+                let worker_h = WithPrio{ prio: prio, inner: thread::current() };
+                match self.queue_tx.send(worker_h) {
+                    Ok(()) => { /* ok! */ }
+                    Err(mpsc::SendError(_)) => return Err(Error::BatonIsGone),
+                }
+                // And then wait for another thread to wake us up.
+                thread::park();
             }
         }
     }
@@ -165,6 +150,57 @@ mod tests {
     use super::*;
     use std::thread;
     use std::time::*;
+    use std::mem;
+
+    #[test]
+    fn test_thread_pool_free() {
+        let (baton, h) = Baton::new(0u8);
+        let h1 = h.clone();
+        let h2 = h.clone();
+        baton.tag_out();
+        thread::spawn(move|| { let baton = h1.tag_in(0).unwrap(); println!("got baton: t0"); thread::sleep(Duration::from_millis(10)); mem::drop(baton); });
+        thread::spawn(move|| { let baton = h2.tag_in(1).unwrap(); println!("got baton: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(baton); });
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_thread_pool_neq() {
+        let (baton, h) = Baton::new(0u8);
+        let h1 = h.clone();
+        let h2 = h.clone();
+        thread::spawn(move|| { let baton = h2.tag_in(1).unwrap(); println!("got baton: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(baton); });
+        thread::spawn(move|| { let baton = h1.tag_in(0).unwrap(); println!("got baton: t0"); thread::sleep(Duration::from_millis(10)); mem::drop(baton); });
+        thread::sleep(Duration::from_millis(10));
+        baton.tag_out();
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_thread_pool_eq() {
+        let (baton, h) = Baton::new(0u8);
+        let h1 = h.clone();
+        let h2 = h.clone();
+        thread::spawn(move|| { let baton = h2.tag_in(0).unwrap(); println!("got baton: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(baton); });
+        thread::spawn(move|| { let baton = h1.tag_in(0).unwrap(); println!("got baton: t0"); thread::sleep(Duration::from_millis(10)); mem::drop(baton); });
+        baton.tag_out();
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_thread_pool_1() {
+        let (baton, h) = Baton::new(0u8);
+        baton.tag_out();
+        let baton = h.tag_in(0).unwrap();
+        baton.tag_out();
+        let baton = h.tag_in(1).unwrap();
+        baton.tag_out();
+        let baton = h.tag_in(2).unwrap();
+        baton.tag_out();
+        let baton = h.tag_in(3).unwrap();
+        baton.tag_out();
+        let baton = h.tag_in(4).unwrap();
+        baton.tag_out();
+    }
 
     #[test]
     fn test_thread_pool() {
@@ -190,19 +226,19 @@ mod tests {
         // Let's go!
         baton.inner.0 = Instant::now();
         baton.tag_out();
-        for i in 0..100 {
-            let mut baton = h.tag_in(0).unwrap();
+        for i in 0..30 {
+            let mut baton = h.tag_in(9).unwrap();
             baton.inner.1.push(baton.inner.0.elapsed());
             thread::sleep(Duration::from_millis(3));
             let ts = Instant::now();
             baton.inner.0 = ts;
             baton.tag_out();
-            println!("thread 0, iter {:>2}: releasing took {:>5} ns", i, ts.elapsed().subsec_nanos());
+            println!("thread 9, iter {:>2}: releasing took {:>5} ns", i, ts.elapsed().subsec_nanos());
         }
         for t in threads {
             t.join().unwrap();
         }
-        let baton = h.tag_in(999).unwrap();
+        let baton = h.tag_in(0).unwrap();
         println!("{:?}", baton.inner);
     }
 }
