@@ -16,18 +16,39 @@ The emergency thread must not die or drop its handle. When it's holding the bato
 holding the baton it should be blocked on a call to `tag_in`, to prevent the baton from being stuck
 in the emergency thread's inbox.
 */
+
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::sync::mpsc;
 
 /// A baton encapsulates some state which may be passed around between the threads in a thread
 /// pool.
 pub struct Baton<T> {
-    queue_rx: mpsc::Receiver<mpsc::SyncSender<Baton<T>>>,
+    queue_rx: mpsc::Receiver<WorkerHandle<T>>,
+    heap: BinaryHeap<WorkerHandle<T>>,
     emergency_tx: mpsc::SyncSender<Baton<T>>,
     pub inner: T,
 }
 
+type WorkerHandle<T> = WithPrio<mpsc::SyncSender<Baton<T>>>;
+
+struct WithPrio<T> {
+    prio: usize,
+    inner: T,
+}
+impl<T> PartialEq for WithPrio<T> {
+    fn eq(&self, other: &WithPrio<T>) -> bool { other.prio == self.prio }
+}
+impl<T> Eq for WithPrio<T> {}
+impl<T> PartialOrd for WithPrio<T> {
+    fn partial_cmp(&self, other: &WithPrio<T>) -> Option<Ordering> { other.prio.partial_cmp(&self.prio) }
+}
+impl<T> Ord for WithPrio<T> {
+    fn cmp(&self, other: &WithPrio<T>) -> Ordering { other.prio.cmp(&self.prio) }
+}
+
 /// Allows taking the baton with high priority.
-pub struct RegularHandle<T>(mpsc::Sender<mpsc::SyncSender<Baton<T>>>);
+pub struct RegularHandle<T>(mpsc::Sender<WorkerHandle<T>>);
 impl<T> Clone for RegularHandle<T> {
     fn clone(&self) -> Self {
         RegularHandle(self.0.clone())
@@ -51,6 +72,7 @@ impl<T> Baton<T> {
         let (emergency_tx, emergency_rx) = mpsc::sync_channel(1);
         let baton = Baton {
             queue_rx: queue_rx,
+            heap: BinaryHeap::new(),
             emergency_tx: emergency_tx,
             inner: inner,
         };
@@ -70,17 +92,21 @@ impl<T> Baton<T> {
     /// whether that thread is ready or not.  This means that if *all* threads are busy when
     /// `tag_out` is called, and then a regular thread calls `tag_in`, and then the emergency
     /// thread calls `tag_in`, the baton will be recieved by the emergency thread.
-    pub fn tag_out(self) -> Result<(), Error> {
-        let (tx, is_emg) = match self.queue_rx.try_recv() {
-            Ok(tx) =>
-                // Ok, there was a regular thread waiting to take over.
-                (tx, false),
-            Err(mpsc::TryRecvError::Empty) =>
-                // All regular threads are busy.  We'll use the emergency thread this time...
-                (self.emergency_tx.clone(), true),
-            Err(mpsc::TryRecvError::Disconnected) =>
-                // All regular threads are gone!  It's all up to the emergency thread now...
-                (self.emergency_tx.clone(), true),
+    pub fn tag_out(mut self) -> Result<(), Error> {
+        // Drain the queue into the heap
+        for x in self.queue_rx.try_iter() {
+            self.heap.push(x);
+        }
+        // And take the max priority element
+        let (tx, is_emg) = match self.heap.pop() {
+            Some(h) => {
+                // Ok, we have another thread waiting to take over. Let's wake it up!
+                (h.inner, false)
+            }
+            None => {
+                // There are no other threads waiting. Let's use the emergency thread.
+                (self.emergency_tx.clone(), true)
+            }
         };
         match tx.try_send(self) {
             Ok(()) => Ok(()),
@@ -104,9 +130,9 @@ impl<T> RegularHandle<T> {
     //
     // TODO: Consume self, and return the handle when calling tag_out, in order to prevent
     // deadlocks.
-    pub fn tag_in(&self) -> Result<Baton<T>, Error> {
+    pub fn tag_in(&self, prio: usize) -> Result<Baton<T>, Error> {
         let (tx, rx) = mpsc::sync_channel::<Baton<T>>(1);
-        match self.0.send(tx) {
+        match self.0.send(WithPrio{ prio: prio, inner: tx }) {
             Ok(()) => {}
             Err(mpsc::SendError(_)) => return Err(Error::BatonIsGone),
         }
