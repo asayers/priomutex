@@ -2,145 +2,124 @@
 A mutex which allows waiting threads to specify a priority.
 */
 
-use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::ptr;
-use std::sync::atomic::{self, AtomicPtr};
+use std::ops::{Deref, DerefMut};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, Thread};
 
+mod with_prio; use with_prio::*;
+mod simple;
+
 /// A mutex which allows waiting threads to specify a priority.
+#[derive(Clone)]
 pub struct PrioMutex<T> {
-    // When locking, check this first to see if the guard is free...
-    slot: Arc<AtomicPtr<PrioMutexGuard<T>>>,
-    // ...and if not, send a work handle to the active thread.
-    queue_tx: mpsc::Sender<WithPrio<Thread>>,
+    inner: Arc<simple::Mutex<Inner<T>>>,
+    tx: mpsc::Sender<WithPrio<Thread>>,
 }
 
-impl<T> Clone for PrioMutex<T> {
-    fn clone(&self) -> Self {
-        PrioMutex {
-            slot: self.slot.clone(),
-            queue_tx: self.queue_tx.clone(),
+struct Inner<T> {
+    data: T,
+    rx: mpsc::Receiver<WithPrio<Thread>>,
+    heap: BinaryHeap<WithPrio<Thread>>,
+}
+
+impl<T> Inner<T> {
+    fn next_thread(&mut self) -> Option<Thread> {
+        for x in self.rx.try_iter() {
+            self.heap.push(x);
         }
+        self.heap.pop().map(|x| x.inner)
     }
 }
 
-unsafe impl<T: Send> Send for PrioMutex<T> {}
-
 impl<T> PrioMutex<T> {
     /// Create a new prio-mutex.
-    pub fn new(inner: T) -> PrioMutex<T> {
-        let (queue_tx, queue_rx) = mpsc::channel();
-        let slot = Arc::new(AtomicPtr::new(ptr::null_mut()));
-        let guard = PrioMutexGuard {
-            queue_rx: queue_rx,
-            heap: BinaryHeap::new(),
-            slot: slot.clone(),
-            inner: inner,
-        };
-        guard.release();
+    pub fn new(data: T) -> PrioMutex<T> {
+        let (tx, rx) = mpsc::channel();
         PrioMutex {
-            slot: slot,
-            queue_tx: queue_tx,
+            inner: Arc::new(simple::Mutex::new(Inner {
+                data: data,
+                rx: rx,
+                heap: BinaryHeap::new(),
+            })),
+            tx: tx,
         }
     }
 
     /// Attempt to take the mutex.  If another thread is holding the mutex, this function will
     /// block until the mutex is released.  Waiting threads are woken up in order of priority.  0
     /// is the highest priority, 1 is second-highest, etc.
-    pub fn lock(&self, prio: usize) -> Result<PrioMutexGuard<T>, Error> {
+    pub fn lock(&self, prio: usize) -> PrioMutexGuard<T> {
         loop {
-            // First check if the guard is free
-            let x = self.slot.swap(ptr::null_mut(), atomic::Ordering::Relaxed); // TODO: Relaxed?
-            if x != ptr::null_mut() {
-                // It's free!
-                let guard = unsafe { Box::from_raw(x) }; // TODO: Is this necessary?
-                return Ok(*guard)
+            if let Some(inner) = self.inner.try_lock() {
+                // we took it!
+                return PrioMutexGuard {
+                    __inner: inner,
+                };
             } else {
-                // The guard is currently held by another thread.  Let's create a handle for waking
-                // this thread, and send it to the active thread.
-                let worker_h = WithPrio{ prio: prio, inner: thread::current() };
-                match self.queue_tx.send(worker_h) {
-                    Ok(()) => { /* ok! */ }
-                    Err(mpsc::SendError(_)) => return Err(Error::GuardIsGone),
-                }
-                // And then wait for another thread to wake us up.
+                let me = WithPrio { prio: prio, inner: thread::current() };
+                self.tx.send(me).unwrap();
                 thread::park();
             }
         }
     }
 }
 
-/// A guard encapsulates some state which may be passed around between threads.
-pub struct PrioMutexGuard<T> {
-    // When releasing, first check to see if there are any waiting threads to hand the guard to...
-    queue_rx: mpsc::Receiver<WithPrio<Thread>>,
-    heap: BinaryHeap<WithPrio<Thread>>,
-    // ...and if not, free the guard.
-    slot: Arc<AtomicPtr<PrioMutexGuard<T>>>,
-    pub inner: T,
+unsafe impl<T: Send> Send for PrioMutex<T> { }
+
+pub struct PrioMutexGuard<'a, T: 'a> {
+    __inner: simple::MutexGuard<'a, Inner<T>>,
 }
 
-impl<T> PrioMutexGuard<T> {
-    /// Release the guard.
-    ///
-    /// If any threads are ready to take the mutex (ie. are currently blocked calling `lock`), then
-    /// the one with the highest priority will receive it; if not, the mutex will just be freed.
-    ///
-    /// This function performs a syscall.  On my machine it takes ~2.5 us.
-    pub fn release(mut self) {
-        // Drain the queue into the heap
-        for x in self.queue_rx.try_iter() {
-            self.heap.push(x);
-        }
-        // And take the max priority element
-        let next_thread = self.heap.pop();
-
-        // Free the guard
-        let slot = self.slot.clone();
-        let guard = Box::new(self);
-        let old = slot.compare_and_swap(ptr::null_mut(),
-                                       Box::into_raw(guard),
-                                       atomic::Ordering::Relaxed); // TODO: is Relaxed ok?
-        assert!(old == ptr::null_mut(), "Impossible: slot wasn't null!");
-
-        // If there's another thread waiting to take over, wake it up.
+impl<'a, T> Drop for PrioMutexGuard<'a, T> {
+    /// Release the lock.  If any threads are ready to take the mutex (ie. are currently blocked
+    /// calling `lock`), then the one with the highest priority will receive it; if not, the mutex
+    /// will just be freed.  This function performs a syscall.  On my machine it takes ~2.5 us.
+    fn drop(&mut self) {
+        let next_thread = self.__inner.next_thread();
         if let Some(h) = next_thread {
-            h.inner.unpark();
+            h.unpark();
         }
     }
 }
 
-#[derive(Debug)]
-pub enum Error {
-    /// Someone has dropped the guard.
-    GuardIsGone,
+impl<'a, T> Deref for PrioMutexGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &(*self.__inner).data
+    }
 }
 
-#[derive(Debug)]
-struct WithPrio<T> {
-    prio: usize,
-    inner: T,
-}
-impl<T> PartialEq for WithPrio<T> {
-    fn eq(&self, other: &WithPrio<T>) -> bool { other.prio == self.prio }
-}
-impl<T> Eq for WithPrio<T> {}
-impl<T> PartialOrd for WithPrio<T> {
-    fn partial_cmp(&self, other: &WithPrio<T>) -> Option<Ordering> { other.prio.partial_cmp(&self.prio) }
-}
-impl<T> Ord for WithPrio<T> {
-    fn cmp(&self, other: &WithPrio<T>) -> Ordering { other.prio.cmp(&self.prio) }
+impl<'a, T> DerefMut for PrioMutexGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut (*self.__inner).data
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::thread;
-    use std::time::*;
-    use std::mem;
+    // use std::time::*;
+    // use std::mem;
 
+    #[test]
+    fn test() {
+        let h = PrioMutex::new(vec![]);
+        let mut tids = vec![];
+        for i in 0..5 {
+            let h = h.clone();
+            tids.push(thread::spawn(move|| {
+                let mut x = h.lock(10-i);
+                thread::sleep_ms(10);
+                x.push(i);
+            }));
+        }
+        for tid in tids { tid.join().unwrap(); }
+        println!("{:?}", *h.lock(9));
+    }
+
+    /*
     #[test]
     fn test_thread_pool_free() {
         let mutex = PrioMutex::new(0u8);
@@ -227,4 +206,5 @@ mod tests {
         let guard = mutex.lock(0).unwrap();
         println!("{:?}", guard.inner);
     }
+    */
 }
