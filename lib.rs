@@ -77,6 +77,7 @@ impl<'a, T> Drop for PrioMutexGuard<'a, T> {
     /// will just be freed.  This function performs a syscall.  On my machine it takes ~2.5 us.
     fn drop(&mut self) {
         let next_thread = self.__inner.next_thread();
+        unsafe { self.__inner.release(); }
         if let Some(h) = next_thread {
             h.unpark();
         }

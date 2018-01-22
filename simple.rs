@@ -16,6 +16,7 @@ impl<T> Mutex<T> {
         }
     }
 
+    // Make sure you call `release` before dropping the guard, or else you'll get a deadlock.
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
         if self.is_free.swap(false, Ordering::SeqCst) {
             Some(MutexGuard::new(self))
@@ -39,15 +40,9 @@ impl<'a, T> MutexGuard<'a, T> {
         }
     }
 
-    // You *must not* dereference this guard after calling `release`.
-    unsafe fn release(&mut self) {
+    // You *must not* dereference this guard after calling `release`!
+    pub unsafe fn release(&mut self) {
         self.__lock.is_free.store(true, Ordering::SeqCst);
-    }
-}
-
-impl<'a, T> Drop for MutexGuard<'a, T> {
-    fn drop(&mut self) {
-        unsafe { self.release(); }
     }
 }
 
@@ -81,6 +76,7 @@ mod tests {
                     if let Some(mut x) = h.try_lock() {
                         x.push(i);
                         thread::sleep_ms(1);
+                        unsafe { x.release(); }
                         break;
                     }
                 }
