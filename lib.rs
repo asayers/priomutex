@@ -7,6 +7,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, Thread};
 
+mod thread_id;
 mod with_prio; use with_prio::*;
 pub mod simple;
 #[cfg(test)] mod bench;
@@ -90,7 +91,7 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         // for simple::MutexGuard then these operations happen in the reverse order, which can lead
         // to a deadlock.
         let next_thread = self.__inner.next_thread();
-        self.__inner.release();
+        self.__inner.release_to(None);
         if let Some(h) = next_thread {
             h.unpark();
         }

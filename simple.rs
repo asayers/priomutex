@@ -5,6 +5,9 @@ The API is exactly like that of `std::sync::Mutex`, except that it provides only
 `lock` is missing.  Internally it performs no syscalls and uses no platform-specific
 functionality.
 
+The other piece of unusual functionality is that the mutex can be explicity freed, specifying the
+ID of a thread.  In this case, only that thread will be allowed to lock it.
+
 ```
 use priomutex::simple::Mutex;
 use std::sync::Arc;
@@ -41,33 +44,45 @@ rx.recv().unwrap();
 ```
 */
 
-use std::ops::{Deref, DerefMut};
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread::{self, ThreadId};
+use thread_id::*;
+use std::usize;
 
 /// A simple mutex with no blocking support.
 pub struct Mutex<T> {
     data: UnsafeCell<T>,
-    is_free: AtomicBool,
+    owner: AtomicUsize,
 }
+
+/// A magic thread ID used to designate that the lock is free to be taken by any thread.
+const TID_ANY: usize = usize::MAX;
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     pub fn new(data: T) -> Mutex<T> {
         Mutex {
             data: UnsafeCell::new(data),
-            is_free: AtomicBool::new(true),
+            owner: AtomicUsize::new(TID_ANY),
         }
     }
 
-    /// Attempts to acquire this lock.
+    /// Attempts to acquire this lock.  If the lock is free, or has been assigned to this thread by
+    /// the last holder, then the lock will be acquired.
     ///
     /// If the lock could not be acquired at this time, then None is returned. Otherwise, an RAII
     /// guard is returned. The lock will be unlocked when the guard is dropped.
     ///
     /// This function does not block.
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
-        if self.is_free.swap(false, Ordering::SeqCst) {
+        let me = extract_thread_id(thread::current().id()) as usize;
+        assert_ne!(me, TID_ANY, "This thread's TID is equal to the magic TID used to designate \
+                   that the lock is free!");
+        let old = self.owner.compare_and_swap(TID_ANY, me, Ordering::SeqCst);
+        if old == TID_ANY || old == me {
+            // It was free and we took it, or it was already assigned to us
             Some(MutexGuard::new(self))
         } else {
             None
@@ -110,25 +125,30 @@ impl<'a, T> MutexGuard<'a, T> {
         }
     }
 
-    /// Invalidate the guard and relesase the lock.
+    /// Invalidate the guard and release the lock.
+    ///
+    /// After calling this, if no thread ID is specified then any other thread will be able to take
+    /// the lock.  If a thread ID was specified then only the specified thread will be able to take
+    /// the lock.
     ///
     /// **It is not necessary to call this function yourself**, since it will be run automatically
     /// when the guard goes out of scope.  This function is useful if, for some reason, you need to
     /// free the lock without dropping the guard.
     ///
-    /// Calling `release` multiple times is safe, but attempting to dereference a guard after
-    /// calling `release` on it will result in a panic!
-    pub fn release(&mut self) {
+    /// Calling `release_to` multiple times is safe, but won't change the thread assignment.
+    /// Attempting to dereference a guard after calling `release_to` on it will result in a panic!
+    pub fn release_to(&mut self, thread_id: Option<ThreadId>) {
         if self.__is_valid {
+            let tid = thread_id.map(|x| extract_thread_id(x) as usize).unwrap_or(TID_ANY);
             self.__is_valid = false;
-            self.__lock.is_free.store(true, Ordering::SeqCst);
+            self.__lock.owner.store(tid, Ordering::SeqCst);
         }
     }
 }
 
 impl<'a, T> Drop for MutexGuard<'a, T> {
     fn drop(&mut self) {
-        self.release();
+        self.release_to(None);
     }
 }
 
