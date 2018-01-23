@@ -29,32 +29,54 @@ impl<T> Mutex<T> {
 unsafe impl<T: Send> Send for Mutex<T> { }
 unsafe impl<T: Send> Sync for Mutex<T> { }
 
+/// An RAII guard.  Can be dereferenced to access the data protected by the mutex.  Frees the mutex
+/// when dropped.
 pub struct MutexGuard<'a, T: 'a> {
-    __lock: &'a Mutex<T>
+    __lock: &'a Mutex<T>,
+    __is_valid: bool,
 }
 
 impl<'a, T> MutexGuard<'a, T> {
     fn new(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
         MutexGuard {
             __lock: mutex,
+            __is_valid: true,
         }
     }
 
-    // You *must not* dereference this guard after calling `release`!
-    pub unsafe fn release(&mut self) {
-        self.__lock.is_free.store(true, Ordering::SeqCst);
+    /// Invalidate the guard and relesase the lock.
+    ///
+    /// **It is not necessary to call this function yourself**, since it will be run automatically
+    /// when the guard goes out of scope.  This function is useful if, for some reason, you need to
+    /// free the lock without dropping the guard.
+    ///
+    /// Calling `release` multiple times is safe, but attempting to dereference a guard after
+    /// calling `release` on it will result in a panic!
+    pub fn release(&mut self) {
+        if self.__is_valid {
+            self.__is_valid = false;
+            self.__lock.is_free.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+impl<'a, T> Drop for MutexGuard<'a, T> {
+    fn drop(&mut self) {
+        self.release();
     }
 }
 
 impl<'a, T> Deref for MutexGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
+        assert!(self.__is_valid);
         unsafe { &*self.__lock.data.get() }
     }
 }
 
 impl<'a, T> DerefMut for MutexGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
+        assert!(self.__is_valid);
         unsafe { &mut *self.__lock.data.get() }
     }
 }
