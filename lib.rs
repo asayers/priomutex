@@ -11,8 +11,7 @@ mod with_prio; use with_prio::*;
 mod simple;
 
 /// A mutex which allows waiting threads to specify a priority.
-#[derive(Clone)]
-pub struct PrioMutex<T> {
+pub struct Mutex<T> {
     inner: Arc<simple::Mutex<Inner<T>>>,
     tx: mpsc::Sender<WithPrio<Thread>>,
 }
@@ -31,12 +30,20 @@ impl<T> Inner<T> {
         self.heap.pop().map(|x| x.inner)
     }
 }
+impl<T> Clone for Mutex<T> {
+    fn clone(&self) -> Self {
+        Mutex {
+            inner: self.inner.clone(),
+            tx: self.tx.clone(),
+        }
+    }
+}
 
-impl<T> PrioMutex<T> {
+impl<T> Mutex<T> {
     /// Create a new prio-mutex.
-    pub fn new(data: T) -> PrioMutex<T> {
+    pub fn new(data: T) -> Mutex<T> {
         let (tx, rx) = mpsc::channel();
-        PrioMutex {
+        Mutex {
             inner: Arc::new(simple::Mutex::new(Inner {
                 data: data,
                 rx: rx,
@@ -49,11 +56,11 @@ impl<T> PrioMutex<T> {
     /// Attempt to take the mutex.  If another thread is holding the mutex, this function will
     /// block until the mutex is released.  Waiting threads are woken up in order of priority.  0
     /// is the highest priority, 1 is second-highest, etc.
-    pub fn lock(&self, prio: usize) -> PrioMutexGuard<T> {
+    pub fn lock(&self, prio: usize) -> MutexGuard<T> {
         loop {
             if let Some(inner) = self.inner.try_lock() {
                 // we took it!
-                return PrioMutexGuard {
+                return MutexGuard {
                     __inner: inner,
                 };
             } else {
@@ -65,13 +72,13 @@ impl<T> PrioMutex<T> {
     }
 }
 
-unsafe impl<T: Send> Send for PrioMutex<T> { }
+unsafe impl<T: Send> Send for Mutex<T> { }
 
-pub struct PrioMutexGuard<'a, T: 'a> {
+pub struct MutexGuard<'a, T: 'a> {
     __inner: simple::MutexGuard<'a, Inner<T>>,
 }
 
-impl<'a, T> Drop for PrioMutexGuard<'a, T> {
+impl<'a, T> Drop for MutexGuard<'a, T> {
     /// Release the lock.  If any threads are ready to take the mutex (ie. are currently blocked
     /// calling `lock`), then the one with the highest priority will receive it; if not, the mutex
     /// will just be freed.  This function performs a syscall.  On my machine it takes ~2.5 us.
@@ -84,14 +91,14 @@ impl<'a, T> Drop for PrioMutexGuard<'a, T> {
     }
 }
 
-impl<'a, T> Deref for PrioMutexGuard<'a, T> {
+impl<'a, T> Deref for MutexGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
         &(*self.__inner).data
     }
 }
 
-impl<'a, T> DerefMut for PrioMutexGuard<'a, T> {
+impl<'a, T> DerefMut for MutexGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut (*self.__inner).data
     }
@@ -106,7 +113,7 @@ mod tests {
 
     #[test]
     fn test() {
-        let h = PrioMutex::new(vec![]);
+        let h = Mutex::new(vec![]);
         let mut tids = vec![];
         for i in 0..5 {
             let h = h.clone();
