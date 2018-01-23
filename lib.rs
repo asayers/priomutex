@@ -17,20 +17,8 @@ pub struct Mutex<T> {
     tx: mpsc::Sender<WithPrio<Thread>>,
 }
 
-struct Inner<T> {
-    data: T,
-    rx: mpsc::Receiver<WithPrio<Thread>>,
-    heap: BinaryHeap<WithPrio<Thread>>,
-}
+unsafe impl<T: Send> Send for Mutex<T> { }
 
-impl<T> Inner<T> {
-    fn next_thread(&mut self) -> Option<Thread> {
-        for x in self.rx.try_iter() {
-            self.heap.push(x);
-        }
-        self.heap.pop().map(|x| x.inner)
-    }
-}
 impl<T> Clone for Mutex<T> {
     fn clone(&self) -> Self {
         Mutex {
@@ -59,11 +47,8 @@ impl<T> Mutex<T> {
     /// is the highest priority, 1 is second-highest, etc.
     pub fn lock(&self, prio: usize) -> MutexGuard<T> {
         loop {
-            if let Some(inner) = self.inner.try_lock() {
-                // we took it!
-                return MutexGuard {
-                    __inner: inner,
-                };
+            if let Some(x) = self.try_lock() {
+                return x;
             } else {
                 let me = WithPrio { prio: prio, inner: thread::current() };
                 self.tx.send(me).unwrap();
@@ -71,9 +56,26 @@ impl<T> Mutex<T> {
             }
         }
     }
+
+    pub fn try_lock(&self) -> Option<MutexGuard<T>> {
+        self.inner.try_lock().map(|inner| MutexGuard { __inner: inner })
+    }
 }
 
-unsafe impl<T: Send> Send for Mutex<T> { }
+struct Inner<T> {
+    data: T,
+    rx: mpsc::Receiver<WithPrio<Thread>>,
+    heap: BinaryHeap<WithPrio<Thread>>,
+}
+
+impl<T> Inner<T> {
+    fn next_thread(&mut self) -> Option<Thread> {
+        for x in self.rx.try_iter() {
+            self.heap.push(x);
+        }
+        self.heap.pop().map(|x| x.inner)
+    }
+}
 
 pub struct MutexGuard<'a, T: 'a> {
     __inner: simple::MutexGuard<'a, Inner<T>>,
