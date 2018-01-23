@@ -85,13 +85,13 @@ pub struct MutexGuard<'a, T: 'a> {
 impl<'a, T> Drop for MutexGuard<'a, T> {
     /// Release the lock.  If any threads are ready to take the mutex (ie. are currently blocked
     /// calling `lock`), then the one with the highest priority will receive it; if not, the mutex
-    /// will just be freed.  This function performs a syscall.  On my machine it takes 3-4 μs.
+    /// will just be freed.  This function performs a syscall.  On my machine it takes ~3 μs.
     fn drop(&mut self) {
         // Release the lock first, and *then* wake the next thread.  If we rely on the Drop impl
         // for simple::MutexGuard then these operations happen in the reverse order, which can lead
         // to a deadlock.
         let next_thread = self.__inner.next_thread();
-        self.__inner.release_to(None);
+        self.__inner.release_to(next_thread.as_ref().map(|x| x.id()));
         if let Some(h) = next_thread {
             h.unpark();
         }
