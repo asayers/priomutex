@@ -8,7 +8,7 @@ use std::sync::{mpsc, Arc};
 use std::thread::{self, Thread};
 
 mod with_prio; use with_prio::*;
-mod simple;
+pub mod simple;
 #[cfg(test)] mod bench;
 
 /// A mutex which allows waiting threads to specify a priority.
