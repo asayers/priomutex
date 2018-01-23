@@ -9,6 +9,7 @@ use std::thread::{self, Thread};
 
 mod with_prio; use with_prio::*;
 mod simple;
+#[cfg(test)] mod bench;
 
 /// A mutex which allows waiting threads to specify a priority.
 pub struct Mutex<T> {
@@ -108,8 +109,6 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
 mod tests {
     use super::*;
     use std::thread;
-    // use std::time::*;
-    // use std::mem;
 
     #[test]
     fn test() {
@@ -126,93 +125,4 @@ mod tests {
         for tid in tids { tid.join().unwrap(); }
         println!("{:?}", *h.lock(9));
     }
-
-    /*
-    #[test]
-    fn test_thread_pool_free() {
-        let mutex = PrioMutex::new(0u8);
-        let h1 = mutex.clone();
-        let h2 = mutex.clone();
-        thread::spawn(move|| { let guard = h1.lock(0).unwrap(); println!("got mutex: t0"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
-        thread::spawn(move|| { let guard = h2.lock(1).unwrap(); println!("got mutex: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    #[test]
-    fn test_thread_pool_neq() {
-        let mutex = PrioMutex::new(0u8);
-        let h1 = mutex.clone();
-        let h2 = mutex.clone();
-        thread::spawn(move|| { let guard = h2.lock(1).unwrap(); println!("got mutex: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
-        thread::spawn(move|| { let guard = h1.lock(0).unwrap(); println!("got mutex: t0"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
-        thread::sleep(Duration::from_millis(10));
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    #[test]
-    fn test_thread_pool_eq() {
-        let mutex = PrioMutex::new(0u8);
-        let h1 = mutex.clone();
-        let h2 = mutex.clone();
-        thread::spawn(move|| { let guard = h2.lock(0).unwrap(); println!("got mutex: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
-        thread::spawn(move|| { let guard = h1.lock(0).unwrap(); println!("got mutex: t0"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    #[test]
-    fn test_thread_pool_1() {
-        let mutex = PrioMutex::new(0u8);
-        let x = mutex.lock(0).unwrap();
-        x.release();
-        let x = mutex.lock(1).unwrap();
-        x.release();
-        let x = mutex.lock(2).unwrap();
-        x.release();
-        let x = mutex.lock(3).unwrap();
-        x.release();
-        let x = mutex.lock(4).unwrap();
-        x.release();
-    }
-
-    #[test]
-    fn test_thread_pool() {
-        let mutex = PrioMutex::new((Instant::now(), vec![]));
-        let mut guard = mutex.lock(9).unwrap();
-        let mut threads = vec![];
-        for thread_num in 1..4 {
-            let mutex = mutex.clone();
-            threads.push(thread::spawn(move||{
-                for i in 0..(10 * thread_num) {
-                    let mut guard = mutex.lock(thread_num).unwrap();
-                    guard.inner.1.push(guard.inner.0.elapsed());
-                    thread::sleep(Duration::from_millis(3));
-                    let ts = Instant::now();
-                    guard.inner.0 = ts;
-                    guard.release();
-                    println!("thread {}, iter {:>2}: releasing took {:>5} ns", thread_num, i, ts.elapsed().subsec_nanos());
-                    thread::sleep(Duration::from_millis(5));
-                }
-            }));
-        }
-        thread::sleep(Duration::from_millis(10));
-
-        // Let's go!
-        guard.inner.0 = Instant::now();
-        guard.release();
-        for i in 0..30 {
-            let mut guard = mutex.lock(9).unwrap();
-            guard.inner.1.push(guard.inner.0.elapsed());
-            thread::sleep(Duration::from_millis(3));
-            let ts = Instant::now();
-            guard.inner.0 = ts;
-            guard.release();
-            println!("thread 9, iter {:>2}: releasing took {:>5} ns", i, ts.elapsed().subsec_nanos());
-        }
-        for t in threads {
-            t.join().unwrap();
-        }
-        let guard = mutex.lock(0).unwrap();
-        println!("{:?}", guard.inner);
-    }
-    */
 }
