@@ -1,6 +1,7 @@
-use super::*;
+extern crate priomutex;
+
+use priomutex::*;
 use std::thread;
-use std::sync::mpsc;
 use std::time::*;
 
 #[test]
@@ -21,40 +22,26 @@ fn test() {
 
 #[test]
 fn test_thread_pool() {
-    let mutex = Mutex::new((Instant::now(), vec![]));
+    let mutex = Mutex::new(Instant::now());
     let mut tids = vec![];
-    for n in 1..4 {
+    for n in 1..10 {
         let mutex = mutex.clone();
         tids.push(thread::spawn(move||{
-            for i in 0..(10 * n) {
+            let mut rng = thread_rng();
+            for i in 0..10 {
                 let ts = {
                     let mut x = mutex.lock(n);
-                    let d = x.0.elapsed();
-                    x.1.push(d);
-                    thread::sleep(Duration::from_millis(3));
+                    println!("thread {}: LOCK    #{:<2} {:>5} ns", n, i, x.elapsed().subsec_nanos());
+                    thread::sleep(Duration::from_millis(3);
                     let ts = Instant::now();
-                    x.0 = ts;
+                    *x = ts;
                     ts
                 };
-                println!("thread {}, iter {:>2}: releasing took {:>5} ns", n, i, ts.elapsed().subsec_nanos());
-                thread::sleep(Duration::from_millis(5));
+                println!("thread {}: RELEASE #{:<2} {:>5} ns", n, i, ts.elapsed().subsec_nanos());
+                thread::sleep(Duration::from_millis(5);
             }
         }));
     }
-    thread::sleep(Duration::from_millis(10));
-
-    // Let's go!
-    // guard.inner.0 = Instant::now();
-    // guard.release();
-    // for i in 0..30 {
-    //     let mut guard = mutex.lock(9).unwrap();
-    //     guard.inner.1.push(guard.inner.0.elapsed());
-    //     thread::sleep(Duration::from_millis(3));
-    //     let ts = Instant::now();
-    //     guard.inner.0 = ts;
-    //     guard.release();
-    //     println!("thread 9, iter {:>2}: releasing took {:>5} ns", i, ts.elapsed().subsec_nanos());
-    // }
     for t in tids {
         t.join().unwrap();
     }
