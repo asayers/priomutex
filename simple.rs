@@ -86,6 +86,7 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::thread;
+    use std::time::*;
 
     #[test]
     fn test() {
@@ -97,8 +98,7 @@ mod tests {
                 loop {
                     if let Some(mut x) = h.try_lock() {
                         x.push(i);
-                        thread::sleep_ms(1);
-                        unsafe { x.release(); }
+                        thread::sleep(Duration::from_millis(1));
                         break;
                     }
                 }

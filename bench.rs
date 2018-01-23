@@ -1,6 +1,6 @@
 use super::*;
-use std::mem;
 use std::thread;
+use std::sync::mpsc;
 use std::time::*;
 
 #[test]
@@ -11,7 +11,7 @@ fn test() {
         let h = h.clone();
         tids.push(thread::spawn(move|| {
             let mut x = h.lock(10-i);
-            thread::sleep_ms(10);
+            thread::sleep(Duration::from_millis(10));
             x.push(i);
         }));
     }
@@ -61,6 +61,7 @@ fn test_thread_pool() {
     let guard = mutex.lock(0);
     println!("{:?}", *guard);
 }
+
 
 /*
 #[test]

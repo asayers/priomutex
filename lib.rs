@@ -112,6 +112,7 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
 mod tests {
     use super::*;
     use std::thread;
+    use std::time::*;
 
     #[test]
     fn test() {
@@ -121,7 +122,7 @@ mod tests {
             let h = h.clone();
             tids.push(thread::spawn(move|| {
                 let mut x = h.lock(10-i);
-                thread::sleep_ms(10);
+                thread::sleep(Duration::from_millis(10));
                 x.push(i);
             }));
         }
