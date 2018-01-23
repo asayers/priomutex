@@ -8,3 +8,6 @@ name = "priomutex"
 path = "lib.rs"
 
 [dependencies]
+
+[dev-dependencies]
+rand = "*"

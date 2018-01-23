@@ -1,6 +1,8 @@
 extern crate priomutex;
+extern crate rand;
 
 use priomutex::*;
+use rand::*;
 use std::thread;
 use std::time::*;
 
@@ -32,13 +34,13 @@ fn test_thread_pool() {
                 let ts = {
                     let mut x = mutex.lock(n);
                     println!("thread {}: LOCK    #{:<2} {:>5} ns", n, i, x.elapsed().subsec_nanos());
-                    thread::sleep(Duration::from_millis(3);
+                    thread::sleep(Duration::from_millis(rng.gen::<u64>() % 32));
                     let ts = Instant::now();
                     *x = ts;
                     ts
                 };
                 println!("thread {}: RELEASE #{:<2} {:>5} ns", n, i, ts.elapsed().subsec_nanos());
-                thread::sleep(Duration::from_millis(5);
+                thread::sleep(Duration::from_millis(rng.gen::<u64>() % 32));
             }
         }));
     }
