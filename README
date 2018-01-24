@@ -1,0 +1,44 @@
+priomutex:  a mutex where waiting threads specify a priority
+============================================================
+
+The API is very similar to std::sync::Mutex.  The notable exception is that
+lock() takes a priority.  If multiple threads are waiting for the mutex when
+it's freed, the one which gave the highest priorty will recieve it.
+
+    impl<T> Mutex<T> {
+        fn new(data: T) -> Mutex<T>;
+        fn lock(&self, prio: usize) -> MutexGuard<T>;
+        fn try_lock(&self) -> Option<MutexGuard<T>>;
+    }
+
+    impl<T: Send> Send for Mutex<T>;
+    impl<T> Clone for Mutex<T>;
+
+    impl<T> Drop for MutexGuard<T>;      // Releases the lock
+    impl<T> Deref for MutexGuard<T>;     // For accessing your data
+    impl<T> DerefMut for MutexGuard<T>;  // For accessing your data
+
+The other slight difference is that std::sync::Mutex implements Sync but not
+Clone, whereas priomutex::Mutex implements Clone but not Sync.  In practice
+this means that you don't need to wrap a priomutex in an Arc.
+
+Current status
+--------------
+
+Currently, priomutexes are *not* poisoned if the thread holding the lock
+panics.  I intend to add this safety feature at some point.
+
+Implementation
+--------------
+
+At first I assumed that implementing priomutex would require a concurrent
+priority queue, and was not looking forward to this.  However, it turns out it
+doesn't need one!
+
+When a thread fails to take the lock, it places a priority and a semaphore onto
+an (ordinary, non-priority) MPSC queue, and then sleeps on the semaphore.  When
+the thread holding the lock releases it, it first drains the concurrent queue
+into a (ordinary, non-concurrent) binary heap, and pops out the semaphore with
+the highest associated priority.  It then stores the remains of the heap behind
+the lock, alongside the user's data. Finally, it releases the lock and signals
+the popped semaphore.
