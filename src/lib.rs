@@ -17,6 +17,8 @@ pub struct Mutex<T> {
     tx: mpsc::Sender<WithPrio<Thread>>,
 }
 
+// This is derived anyway by the autotrait rules, but we make it explicit so that it shows up in
+// the docs.
 unsafe impl<T: Send> Send for Mutex<T> { }
 
 impl<T> Clone for Mutex<T> {
@@ -130,5 +132,27 @@ mod tests {
         }
         for tid in tids { tid.join().unwrap(); }
         println!("{:?}", *h.lock(9));
+    }
+
+    #[test]
+    // Check that the releasing thread doesn't have an unfair advantage in re-taking
+    fn test_no_unfair_advantage() {
+        let m1 = Mutex::new(0);
+        let m2 = m1.clone();
+        {
+            let mut g = m1.lock(0);   // thread 1 takes the lock first
+            thread::spawn(move|| {       // thread 2 simply:
+                let mut g = m2.lock(0);  // waits for the lock...
+                thread::sleep(Duration::from_millis(1000));  // and holds it forever (effectively)
+                *g += 1;
+            });
+            thread::sleep(Duration::from_millis(500)); // let thread 2 fully go to sleep
+            *g += 1;
+        } // now release... and immediately try to re-acquire
+        for _ in 0..100 {
+            if m1.try_lock().is_some() {
+                panic!("try_lock succeeded when there was a thread waiting!");
+            }
+        }
     }
 }
