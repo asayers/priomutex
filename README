@@ -28,6 +28,20 @@ Current status
 Currently, priomutexes are *not* poisoned if the thread holding the lock
 panics.  I intend to add this safety feature at some point.
 
+The code in thread_id.rs is this crate's secret shame.  The ThreadId facility
+provided by libstd comes packaged in a fairly restrictive abstraction, and the
+way we use it breaks that abstraction.  This means that priomutex is unstable,
+in the sense that:
+
+    ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+    There may, in the future, exist a version of libstd such that priomutex
+    will compile successfully, but then panic whenever lock() is called.
+    ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+
+Obviously I'd like to fix this ASAP.  Note that the only expected failure mode
+is one where lock()ing *always* results in a panic.  In particular, no
+reasonable change to libstd will make priomutex unsafe.
+
 Implementation
 --------------
 
