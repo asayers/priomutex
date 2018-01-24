@@ -42,3 +42,15 @@ into a (ordinary, non-concurrent) binary heap, and pops out the semaphore with
 the highest associated priority.  It then stores the remains of the heap behind
 the lock, alongside the user's data. Finally, it releases the lock and signals
 the popped semaphore.
+
+Licence
+-------
+
+Licensed under either of the following, at your option:
+
+ * Apache Licence 2.0 (see LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+ * MIT licence (see LICENSE-MIT or http://opensource.org/licenses/MIT)
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.
