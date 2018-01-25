@@ -52,16 +52,24 @@ use std::thread::{self, ThreadId};
 
 /// A simple mutex with no blocking support.
 pub struct Mutex<T> {
-    data: UnsafeCell<T>,
-    owner: AtomicUsize,
+    inner: UnsafeCell<Inner<T>>,
+    state: AtomicUsize,
+}
+
+struct Inner<T> {
+    data: T,
+    reserved_for: Option<ThreadId>,
 }
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     pub fn new(data: T) -> Mutex<T> {
         Mutex {
-            data: UnsafeCell::new(data),
-            owner: AtomicUsize::new(TID_FREE),
+            inner: UnsafeCell::new(Inner {
+                data: data,
+                reserved_for: None,
+            }),
+            state: AtomicUsize::new(STATE_FREE),
         }
     }
 
@@ -73,18 +81,47 @@ impl<T> Mutex<T> {
     ///
     /// This function does not block.
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
-        // Note: because hash_tid is not bijective, it's possible that we take the lock here when
-        // it was actually earmarked for someone else.  Oops!
-        let tid_me = hash_tid(thread::current().id());
-        if self.owner.compare_and_swap(TID_FREE, TID_LOCK, Ordering::SeqCst) == TID_FREE {
-            // It was free and we locked it
-            Some(MutexGuard::new(self))
-        } else if self.owner.compare_and_swap(tid_me, TID_LOCK, Ordering::SeqCst) == tid_me {
-            // It was assigned to us and we locked it
-            Some(MutexGuard::new(self))
-        } else {
-            // It's locked, or assigned to someone else
-            None
+        loop {
+            let orig = self.state.load(Ordering::SeqCst);
+            match orig {
+                STATE_FREE => {
+                    // It's free.  Let's take it!  (Transition 1)
+                    let x = self.state.compare_and_swap(orig, STATE_LOCKED, Ordering::SeqCst);
+                    if x != orig { continue; }  // The value changed under us, our CAS did nothing. Loop!
+                    assert_eq!(unsafe { (*self.inner.get()).reserved_for }, None);  // [inv-2]
+                    return Some(MutexGuard::new(self));
+                }
+                STATE_LOCKED => {
+                    // Is's locked.  We failed to acquire it.
+                    return None;
+                }
+                STATE_CHECKING => {
+                    // Someone else is checking.  Very soon the state will change to either LOCKED
+                    // or RESERVED.
+                    /* loop */
+                }
+                reserved_for_hash => {
+                    // It's reserved for someone.  Us, perhaps?
+                    let me = thread::current().id();
+                    let me_hash = hash_tid(me);
+                    if reserved_for_hash != me_hash { return None; }
+                    // It was reserved for a thread with our hash.  Let's check if it's us.  (Transition 2)
+                    let x = self.state.compare_and_swap(orig, STATE_CHECKING, Ordering::SeqCst);
+                    if x != orig { continue; }  // The value changed under us, our CAS did nothing. Loop!
+                    let reserved_for = unsafe { (*self.inner.get()).reserved_for };
+                    if reserved_for == Some(me) {
+                        // It *was* reserved for us!  Take the lock.  (Transition 3)
+                        let x = self.state.swap(STATE_LOCKED, Ordering::SeqCst);
+                        assert_eq!(x, STATE_CHECKING);  // [inv-1]
+                        return Some(MutexGuard::new(self));
+                    } else {
+                        // It was reserved for someone else...  Put it back how we found it.  (Transition 4)
+                        let x = self.state.swap(orig, Ordering::SeqCst);
+                        assert_eq!(x, STATE_CHECKING);  // [inv-1]
+                        return None;
+                    }
+                }
+            }
         }
     }
 
@@ -92,7 +129,7 @@ impl<T> Mutex<T> {
     pub fn into_inner(self) -> T {
         // We know statically that there are no outstanding references to
         // `self` so there's no need to lock the inner mutex.
-        unsafe { self.data.into_inner() }
+        unsafe { self.inner.into_inner().data }
     }
 
     /// Returns a mutable reference to the underlying data.
@@ -102,7 +139,7 @@ impl<T> Mutex<T> {
     pub fn get_mut(&mut self) -> &mut T {
         // We know statically that there are no other references to `self`, so
         // there's no need to lock the inner mutex.
-        unsafe { &mut *self.data.get() }
+        unsafe { &mut (*self.inner.get()).data }
     }
 }
 
@@ -138,9 +175,11 @@ impl<'a, T> MutexGuard<'a, T> {
     /// Attempting to dereference a guard after calling `release_to` on it will result in a panic!
     pub fn release_to(&mut self, thread_id: Option<ThreadId>) {
         if self.__is_valid {
-            let tid = thread_id.map(hash_tid).unwrap_or(TID_FREE);
+            unsafe { (*self.__lock.inner.get()).reserved_for = thread_id; }
             self.__is_valid = false;
-            self.__lock.owner.store(tid, Ordering::SeqCst);
+            let new_state = thread_id.map(hash_tid).unwrap_or(STATE_FREE);
+            let x = self.__lock.state.swap(new_state, Ordering::SeqCst);
+            assert_eq!(x, STATE_LOCKED);  // [inv-3]
         }
     }
 }
@@ -155,24 +194,53 @@ impl<'a, T> Deref for MutexGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
         assert!(self.__is_valid);
-        unsafe { &*self.__lock.data.get() }
+        unsafe { &(*self.__lock.inner.get()).data }
     }
 }
 
 impl<'a, T> DerefMut for MutexGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
         assert!(self.__is_valid);
-        unsafe { &mut *self.__lock.data.get() }
+        unsafe { &mut (*self.__lock.inner.get()).data }
     }
 }
 
-/// A magic thread ID used to designate that the lock is free to be taken by any thread.
-const TID_FREE: usize = 0;
-const TID_LOCK: usize = 1;
+/* Note [State machine]
 
-/// Hash a ThreadId to a usize which is guaranteed to be greater than 1.
+The state of the mutex is one of:
+
+ * FREE      - The lock is available for anyone to take
+ * RESERVED  - The lock is available for a specific thread to take
+ * LOCKED    - The lock is currently held by a thread
+ * CHECKING  - Some thread is currently testing to see if it is allowed to take the lock
+
+The allowed transitions are:
+
+ (1)  FREE     -> LOCKED      - The lock was free, take it!
+ (2)  RESERVED -> CHECKING    - The lock is reserved. Check if it's reserved for us.
+ (3)  CHECKING -> LOCKED      - We checked if it was reseved for us, and it was!
+ (4)  CHECKING -> RESERVED    - We checked if it was reseved for us, and it wasn't :-(
+ (5)  LOCKED   -> FREE        - Release the lock for anyone to take
+ (6)  LOCKED   -> RESERVED    - Release the lock for someone particular to take
+
+If you change the state to LOCKED or CHECKING, you have exclusive access to the inner until you
+change the state back to FREE or RESERVED.
+
+[inv-1]: If the state is LOCKED or CHECKING, only the thread which moved the mutex into that state
+         is allowed to update the state.
+[inv-2]: If the state is FREE, then `reserved_for` must be None.
+[inv-3]: If a mutex guard exists and is valid, then the state must be LOCKED.
+
+*/
+
+const STATE_FREE: usize = 0;
+const STATE_LOCKED: usize = 1;
+const STATE_CHECKING: usize = 2;
+// Anything else means "RESERVED". As an optimisation, the value is the hash of the ThreadId.
+
+/// Hash a ThreadId to a usize which is guaranteed to be greater than 2.
 ///
-/// In rust 1.23, this is guaranteed not to have any collisions for the first (usize::MAX - 2)
+/// In rust 1.23, this is guaranteed not to have any collisions for the first (usize::MAX - 3)
 /// threads you spawn.
 fn hash_tid(tid: ThreadId) -> usize {
     struct IdHasher(u64);
@@ -191,8 +259,7 @@ fn hash_tid(tid: ThreadId) -> usize {
     let mut hasher = IdHasher(0);
     tid.hash(&mut hasher);
     let x = hasher.0 as usize;
-    x.saturating_add(2);
-    x
+    x.saturating_add(3)
 }
 
 #[cfg(test)]
