@@ -29,7 +29,10 @@ for _ in 0..N {
     thread::spawn(move || {
         // The shared state can only be accessed once the lock is held.  Here
         // we spin-wait until the lock is acquired.
-        let mut data = loop { if let Some(x) = data.try_lock() { break x } };
+        let mut data = loop {
+            if let Some(x) = data.try_lock() { break x }
+            else { thread::yield_now(); }
+        };
         // Our non-atomic increment is safe because we're the only thread
         // which can access the shared state when the lock is held.
         *data += 1;
