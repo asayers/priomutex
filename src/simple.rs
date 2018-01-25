@@ -88,7 +88,9 @@ impl<T> Mutex<T> {
                     // It's free.  Let's take it!  (Transition 1)
                     let x = self.state.compare_and_swap(orig, STATE_LOCKED, Ordering::SeqCst);
                     if x != orig { continue; }  // The value changed under us, our CAS did nothing. Loop!
-                    assert_eq!(unsafe { (*self.inner.get()).reserved_for }, None);  // [inv-2]
+                    // We put the mutex into LOCKED, so this is safe:
+                    let reserved_for = unsafe { (*self.inner.get()).reserved_for };
+                    assert_eq!(reserved_for, None);  // [inv-2]
                     return Some(MutexGuard::new(self));
                 }
                 STATE_LOCKED => {
@@ -108,6 +110,7 @@ impl<T> Mutex<T> {
                     // It was reserved for a thread with our hash.  Let's check if it's us.  (Transition 2)
                     let x = self.state.compare_and_swap(orig, STATE_CHECKING, Ordering::SeqCst);
                     if x != orig { continue; }  // The value changed under us, our CAS did nothing. Loop!
+                    // We put the mutex into CHECKING, so this is safe:
                     let reserved_for = unsafe { (*self.inner.get()).reserved_for };
                     if reserved_for == Some(me) {
                         // It *was* reserved for us!  Take the lock.  (Transition 3)
@@ -175,9 +178,11 @@ impl<'a, T> MutexGuard<'a, T> {
     /// Attempting to dereference a guard after calling `release_to` on it will result in a panic!
     pub fn release_to(&mut self, thread_id: Option<ThreadId>) {
         if self.__is_valid {
-            unsafe { (*self.__lock.inner.get()).reserved_for = thread_id; }
+            // We put the mutex into LOCKED (inv-3), so this is safe:
+            unsafe { self.__lock.inner.get().as_mut().unwrap().reserved_for = thread_id; }
             self.__is_valid = false;
             let new_state = thread_id.map(hash_tid).unwrap_or(STATE_FREE);
+            // Transition 5 or Transition 6
             let x = self.__lock.state.swap(new_state, Ordering::SeqCst);
             assert_eq!(x, STATE_LOCKED);  // [inv-3]
         }
@@ -194,6 +199,7 @@ impl<'a, T> Deref for MutexGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
         assert!(self.__is_valid);
+        // We put the mutex into LOCKED (inv-3), so this is safe:
         unsafe { &(*self.__lock.inner.get()).data }
     }
 }
@@ -201,6 +207,7 @@ impl<'a, T> Deref for MutexGuard<'a, T> {
 impl<'a, T> DerefMut for MutexGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut T {
         assert!(self.__is_valid);
+        // The state is LOCKED (inv-3), so this is safe:
         unsafe { &mut (*self.__lock.inner.get()).data }
     }
 }
@@ -229,7 +236,8 @@ change the state back to FREE or RESERVED.
 [inv-1]: If the state is LOCKED or CHECKING, only the thread which moved the mutex into that state
          is allowed to update the state.
 [inv-2]: If the state is FREE, then `reserved_for` must be None.
-[inv-3]: If a mutex guard exists and is valid, then the state must be LOCKED.
+[inv-3]: If a mutex guard exists and is valid, then the state must be LOCKED.  Furthermore, the
+         mutex was put into that state by the thread holding the reference to the valid guard.
 
 */
 
@@ -238,7 +246,8 @@ const STATE_LOCKED: usize = 1;
 const STATE_CHECKING: usize = 2;
 // Anything else means "RESERVED". As an optimisation, the value is the hash of the ThreadId.
 
-/// Hash a ThreadId to a usize which is guaranteed to be greater than 2.
+/// Hash a ThreadId to a usize which is guaranteed to be greater than 2, so that it doesn't collide
+/// with STATE_{FREE,LOCKED,CHECKING}.
 ///
 /// In rust 1.23, this is guaranteed not to have any collisions for the first (usize::MAX - 3)
 /// threads you spawn.
