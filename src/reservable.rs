@@ -1,15 +1,16 @@
 /*!
-A very simple mutex with no blocking support.  Threads must spin while waiting to lock.
+A spinlock-only mutex with the ability to reserve the lock for another thread.
 
-The API is exactly like that of `std::sync::Mutex`, except that it provides only `try_lock`;
-`lock` is missing.  Internally it performs no syscalls and uses no platform-specific
+This mutex comes with no blocking support: threads must spin while waiting to lock.  The API is
+exactly like that of `std::sync::Mutex` except that it omits `lock`;  use `try_lock` instead.  The
+lack of blocking support means that this mutex performs no syscalls and uses no platform-specific
 functionality.
 
-The other piece of unusual functionality is that the mutex can be explicity freed, specifying the
-ID of a thread.  In this case, only that thread will be allowed to lock it.
+The mutex can be explicity freed, specifying the `ThreadId` of a thread.  In this case, `try_lock`
+will succeed only if called from the specified thread.
 
 ```
-use priomutex::simple::Mutex;
+use priomutex::reservable::Mutex;
 use std::sync::Arc;
 use std::sync::mpsc::channel;
 use std::thread;
@@ -53,7 +54,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::hash::{Hash, Hasher};
 use std::thread::{self, ThreadId};
 
-/// A simple mutex with no blocking support.
+/// A mutex with no blocking support, but the ability to reserve the lock for another thread.
 pub struct Mutex<T> {
     inner: UnsafeCell<Inner<T>>,
     state: AtomicUsize,
@@ -152,8 +153,10 @@ impl<T> Mutex<T> {
 unsafe impl<T: Send> Send for Mutex<T> { }
 unsafe impl<T: Send> Sync for Mutex<T> { }
 
-/// An RAII guard.  Can be dereferenced to access the data protected by the mutex.  Frees the mutex
-/// when dropped.
+/// An RAII guard.  Frees the mutex when dropped.
+///
+/// While the guard is still valid, it can be dereferenced to access the data protected by the
+/// mutex.  Attempting to dereference a guard which has been released will result in a panic!
 pub struct MutexGuard<'a, T: 'a> {
     __lock: &'a Mutex<T>,
     __is_valid: bool,
@@ -167,18 +170,14 @@ impl<'a, T> MutexGuard<'a, T> {
         }
     }
 
-    /// Invalidate the guard and release the lock.
+    /// Invalidate the guard and release the lock.  If this lock has already been released, calling
+    /// this function again does nothing.
     ///
-    /// After calling this, if no thread ID is specified then any other thread will be able to take
-    /// the lock.  If a thread ID was specified then only the specified thread will be able to take
-    /// the lock.
+    /// * If no thread ID was specified:  any other thread will be able to take the lock.
+    /// * If a thread ID was specified:  only the specified thread will be able to take the lock.
     ///
-    /// **It is not necessary to call this function yourself**, since it will be run automatically
-    /// when the guard goes out of scope.  This function is useful if, for some reason, you need to
-    /// free the lock without dropping the guard.
-    ///
-    /// Calling `release_to` multiple times is safe, but won't change the thread assignment.
-    /// Attempting to dereference a guard after calling `release_to` on it will result in a panic!
+    /// It is not necessary to call this function yourself, since it will be run automatically when
+    /// the guard goes out of scope.
     pub fn release_to(&mut self, thread_id: Option<ThreadId>) {
         if self.__is_valid {
             // We put the mutex into LOCKED (inv-3), so this is safe:
@@ -193,6 +192,7 @@ impl<'a, T> MutexGuard<'a, T> {
 }
 
 impl<'a, T> Drop for MutexGuard<'a, T> {
+    /// Release the mutex, without reserving it for any particular thread.
     fn drop(&mut self) {
         self.release_to(None);
     }
@@ -200,6 +200,7 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
 
 impl<'a, T> Deref for MutexGuard<'a, T> {
     type Target = T;
+    /// Will panic if the guard has already been released via a call to `release_to`.
     fn deref(&self) -> &T {
         assert!(self.__is_valid);
         // We put the mutex into LOCKED (inv-3), so this is safe:
@@ -208,6 +209,7 @@ impl<'a, T> Deref for MutexGuard<'a, T> {
 }
 
 impl<'a, T> DerefMut for MutexGuard<'a, T> {
+    /// Will panic if the guard has already been released via a call to `release_to`.
     fn deref_mut(&mut self) -> &mut T {
         assert!(self.__is_valid);
         // The state is LOCKED (inv-3), so this is safe:

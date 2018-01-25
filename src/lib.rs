@@ -8,11 +8,11 @@ use std::sync::{mpsc, Arc};
 use std::thread::{self, Thread};
 
 mod with_prio; use with_prio::*;
-pub mod simple;
+pub mod reservable;
 
 /// A mutex which allows waiting threads to specify a priority.
 pub struct Mutex<T> {
-    inner: Arc<simple::Mutex<Inner<T>>>,
+    inner: Arc<reservable::Mutex<Inner<T>>>,
     tx: mpsc::Sender<WithPrio<Thread>>,
 }
 
@@ -34,7 +34,7 @@ impl<T> Mutex<T> {
     pub fn new(data: T) -> Mutex<T> {
         let (tx, rx) = mpsc::channel();
         Mutex {
-            inner: Arc::new(simple::Mutex::new(Inner {
+            inner: Arc::new(reservable::Mutex::new(Inner {
                 data: data,
                 rx: rx,
                 heap: BinaryHeap::new(),
@@ -79,7 +79,7 @@ impl<T> Inner<T> {
 }
 
 pub struct MutexGuard<'a, T: 'a> {
-    __inner: simple::MutexGuard<'a, Inner<T>>,
+    __inner: reservable::MutexGuard<'a, Inner<T>>,
 }
 
 impl<'a, T> Drop for MutexGuard<'a, T> {

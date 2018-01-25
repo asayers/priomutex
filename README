@@ -31,8 +31,8 @@ panics.  I intend to add this safety feature at some point.
 Implementation
 --------------
 
-At first I assumed that implementing priomutex would require a concurrent
-priority queue, and was not looking forward to this.  However, it turns out it
+At first I assumed that priomutex would require a concurrent priority queue,
+and was not looking forward to implementing this.  However, it turns out it
 doesn't need one!
 
 When a thread fails to take the lock, it places a priority and a semaphore onto

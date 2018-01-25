@@ -75,8 +75,8 @@ fn test_bench() {
 }
 
 #[test]
-fn test_simple_anyone() {
-    let mutex = Arc::new(simple::Mutex::new(Instant::now()));
+fn test_reservable_anyone() {
+    let mutex = Arc::new(reservable::Mutex::new(Instant::now()));
     let mut tids = vec![];
     for n in 1..5 {
         let mutex = mutex.clone();
@@ -104,8 +104,8 @@ fn test_simple_anyone() {
 }
 
 #[test]
-fn test_simple_myself() {
-    let mutex = Arc::new(simple::Mutex::new(Instant::now()));
+fn test_reservable_myself() {
+    let mutex = Arc::new(reservable::Mutex::new(Instant::now()));
     let mut tids = vec![];
     for n in 1..5 {
         let mutex = mutex.clone();
