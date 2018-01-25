@@ -47,9 +47,8 @@ rx.recv().unwrap();
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::hash::{Hash, Hasher};
 use std::thread::{self, ThreadId};
-use thread_id::*;
-use std::usize;
 
 /// A simple mutex with no blocking support.
 pub struct Mutex<T> {
@@ -57,15 +56,12 @@ pub struct Mutex<T> {
     owner: AtomicUsize,
 }
 
-/// A magic thread ID used to designate that the lock is free to be taken by any thread.
-const TID_ANY: usize = usize::MAX;
-
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     pub fn new(data: T) -> Mutex<T> {
         Mutex {
             data: UnsafeCell::new(data),
-            owner: AtomicUsize::new(TID_ANY),
+            owner: AtomicUsize::new(TID_FREE),
         }
     }
 
@@ -77,14 +73,17 @@ impl<T> Mutex<T> {
     ///
     /// This function does not block.
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
-        let me = extract_thread_id(thread::current().id()) as usize;
-        assert_ne!(me, TID_ANY, "This thread's TID is equal to the magic TID used to designate \
-                   that the lock is free!");
-        let old = self.owner.compare_and_swap(TID_ANY, me, Ordering::SeqCst);
-        if old == TID_ANY || old == me {
-            // It was free and we took it, or it was already assigned to us
+        // Note: because hash_tid is not bijective, it's possible that we take the lock here when
+        // it was actually earmarked for someone else.  Oops!
+        let tid_me = hash_tid(thread::current().id());
+        if self.owner.compare_and_swap(TID_FREE, TID_LOCK, Ordering::SeqCst) == TID_FREE {
+            // It was free and we locked it
+            Some(MutexGuard::new(self))
+        } else if self.owner.compare_and_swap(tid_me, TID_LOCK, Ordering::SeqCst) == tid_me {
+            // It was assigned to us and we locked it
             Some(MutexGuard::new(self))
         } else {
+            // It's locked, or assigned to someone else
             None
         }
     }
@@ -139,7 +138,7 @@ impl<'a, T> MutexGuard<'a, T> {
     /// Attempting to dereference a guard after calling `release_to` on it will result in a panic!
     pub fn release_to(&mut self, thread_id: Option<ThreadId>) {
         if self.__is_valid {
-            let tid = thread_id.map(|x| extract_thread_id(x) as usize).unwrap_or(TID_ANY);
+            let tid = thread_id.map(hash_tid).unwrap_or(TID_FREE);
             self.__is_valid = false;
             self.__lock.owner.store(tid, Ordering::SeqCst);
         }
@@ -165,6 +164,35 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
         assert!(self.__is_valid);
         unsafe { &mut *self.__lock.data.get() }
     }
+}
+
+/// A magic thread ID used to designate that the lock is free to be taken by any thread.
+const TID_FREE: usize = 0;
+const TID_LOCK: usize = 1;
+
+/// Hash a ThreadId to a usize which is guaranteed to be greater than 1.
+///
+/// In rust 1.23, this is guaranteed not to have any collisions for the first (usize::MAX - 2)
+/// threads you spawn.
+fn hash_tid(tid: ThreadId) -> usize {
+    struct IdHasher(u64);
+    impl Hasher for IdHasher {
+        // If it's a u64, just take it (in rust 1.23, ThreadIds are just a u64)
+        #[inline] fn write_u64(&mut self, x: u64) { self.0 = x; }
+        // Uh oh! The implementation of ThreadId has changed! Fall back to FNV
+        #[inline] fn write(&mut self, xs: &[u8])  {
+            for x in xs {
+                self.0 = self.0 ^ *x as u64;
+                self.0 = self.0.wrapping_mul(0x100000001b3);
+            }
+        }
+        #[inline] fn finish(&self) -> u64 { self.0 }
+    }
+    let mut hasher = IdHasher(0);
+    tid.hash(&mut hasher);
+    let x = hasher.0 as usize;
+    x.saturating_add(2);
+    x
 }
 
 #[cfg(test)]

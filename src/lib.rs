@@ -7,7 +7,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, Thread};
 
-mod thread_id;
 mod with_prio; use with_prio::*;
 pub mod simple;
 

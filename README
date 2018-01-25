@@ -28,19 +28,10 @@ Current status
 Currently, priomutexes are *not* poisoned if the thread holding the lock
 panics.  I intend to add this safety feature at some point.
 
-The code in thread_id.rs is this crate's secret shame.  The ThreadId facility
-provided by libstd comes packaged in a fairly restrictive abstraction, and the
-way we use it breaks that abstraction.  This means that priomutex is unstable,
-in the sense that:
-
-    ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
-    There may, in the future, exist a version of libstd such that priomutex
-    will compile successfully, but then panic whenever lock() is called.
-    ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
-
-Obviously I'd like to fix this ASAP.  Note that the only expected failure mode
-is one where lock()ing *always* results in a panic.  In particular, no
-reasonable change to libstd will make priomutex unsafe.
+There's a bug which means that, in rare cases, a waiting thread may become
+deadlocked.  Triggering this bug requires spawning billions of threads, so it's
+unlikely to show up in normal code;  however, it may be possible for an
+attacker to exploit it.  (See "Hash collision bug" for details.)
 
 Implementation
 --------------
@@ -56,6 +47,29 @@ into a (ordinary, non-concurrent) binary heap, and pops out the semaphore with
 the highest associated priority.  It then stores the remains of the heap behind
 the lock, alongside the user's data. Finally, it releases the lock and signals
 the popped semaphore.
+
+Hash collision bug
+------------------
+
+You will need two threads (A and B) whose ThreadIds hash to the same usize.
+Lock the mutex, and have A wait on it.  Release the lock.  (At this point the
+lock is earmarked for A, and A's semaphore is signalled.)  Before A is woken by
+the OS scheduler, take the lock on B.  Because their ThreadIds hash to the same
+value, B will successfully take the lock.  When A wakes up, it will see that
+the lock is taken, assume its wakeup was spurious, and go back to sleep;
+however, A's semaphore is gone from the queue, meaning that A is now
+deadlocked.
+
+Triggering this issue requires spawning threads until a hash collision is
+found.  On a 32-bit machine, you're guaranteed to find two such threads within
+4.3 billion threads.  On some systems, this may only take 12 hours or so.
+Given our hash algorithm and the current implementation of ThreadId, it will
+actually take the full 4.3 billion before you see a collision, but this is not
+guaranteed to be the case given a future version of libstd (>1.23).
+
+I can't think of a proper fix right now which doesn't break the ThreadId
+abstraction.  Breaking this abstraction would make priomutex unstable in the
+case of upgrading libstd.
 
 Licence
 -------
