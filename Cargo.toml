@@ -3,9 +3,9 @@ name = "priomutex"
 version = "0.1.0"
 authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 description = "A mutex where waiting threads specify a priority"
-documentation = "https://docs.rs/easybench/"
-repository = "https://github.com/asayers/easybench-rs"
-readme = "README.md"
+documentation = "https://docs.rs/priomutex/"
+repository = "https://github.com/asayers/priomutex"
+readme = "README"
 keywords = ["mutex"]
 license = "MIT OR Apache-2.0"
 
