@@ -1,9 +1,9 @@
 priomutex:  a mutex where waiting threads specify a priority
 ============================================================
 
-The API is very similar to std::sync::Mutex.  The notable exception is that
-lock() takes a priority.  If multiple threads are waiting for the mutex when
-it's freed, the one which gave the highest priorty will recieve it.
+The API is very similar to std::sync::Mutex.  The key difference, of course, is
+that lock() takes a priority.  If multiple threads are waiting for the mutex
+when it's freed, the one which gave the highest priorty will recieve it.
 
     impl<T> Mutex<T> {
         fn new(data: T) -> Mutex<T>;
@@ -18,9 +18,10 @@ it's freed, the one which gave the highest priorty will recieve it.
     impl<T> Deref for MutexGuard<T>;     // For accessing your data
     impl<T> DerefMut for MutexGuard<T>;  // For accessing your data
 
-The other slight difference is that std::sync::Mutex implements Sync but not
-Clone, whereas priomutex::Mutex implements Clone but not Sync.  In practice
-this means that you don't need to wrap a priomutex in an Arc.
+The other difference is that std::sync::Mutex implements Sync but not Clone,
+whereas priomutex::Mutex implements Clone but not Sync.  In practice this means
+(1) that you don't need to wrap a priomutex in an Arc, and (2) that we can't
+implement into_inner() and get_mut().
 
 Current status
 --------------

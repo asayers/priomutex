@@ -1,5 +1,50 @@
 /*!
-A mutex which allows waiting threads to specify a priority.
+A mutex where waiting threads to specify a priority.
+
+The API is very similar to `std::sync::Mutex`.  The key difference, of course, is that `lock` takes
+a priority.  If multiple threads are waiting for the mutex when it's freed, the one which gave the
+highest priorty will recieve it.
+
+The other difference is that `std::sync::Mutex` implements `Sync` but not `Clone`, whereas
+`priomutex::Mutex` implements `Clone` but not `Sync`.  In practice this means (1) that you don't
+need to wrap a priomutex in an `Arc`, and (2) that we can't implement `into_inner` and `get_mut`.
+
+```
+use priomutex::Mutex;
+use std::sync::mpsc::channel;
+use std::thread;
+
+const N: usize = 10;
+
+// Spawn a few threads to increment a shared variable (non-atomically), and
+// let the main thread know once all increments are done.
+let data = Mutex::new(0);
+
+let (tx, rx) = channel();
+for _ in 0..N {
+    let (data, tx) = (data.clone(), tx.clone());
+    thread::spawn(move || {
+        // The shared state can only be accessed once the lock is held.  Here
+        // we spin-wait until the lock is acquired.
+        let mut data = data.lock(0);
+        // Our non-atomic increment is safe because we're the only thread
+        // which can access the shared state when the lock is held.
+        *data += 1;
+        if *data == N {
+            tx.send(()).unwrap();
+        }
+        // the lock is unlocked here when `data` goes out of scope.
+    });
+}
+
+rx.recv().unwrap();
+```
+
+## Poisoning
+
+Currently, priomutexes don't support poisoning; they are *not* poisoned if the thread holding the
+lock panics.
+
 */
 
 use std::collections::BinaryHeap;
@@ -30,7 +75,7 @@ impl<T> Clone for Mutex<T> {
 }
 
 impl<T> Mutex<T> {
-    /// Create a new prio-mutex.
+    /// Creates a new mutex in an unlocked state ready for use.
     pub fn new(data: T) -> Mutex<T> {
         let (tx, rx) = mpsc::channel();
         Mutex {
@@ -43,9 +88,11 @@ impl<T> Mutex<T> {
         }
     }
 
-    /// Attempt to take the mutex.  If another thread is holding the mutex, this function will
-    /// block until the mutex is released.  Waiting threads are woken up in order of priority.  0
-    /// is the highest priority, 1 is second-highest, etc.
+    /// Takes the lock.  If another thread is holding it, this function will block until the lock
+    /// is released.
+    ///
+    /// Waiting threads are woken up in order of priority.  0 is the highest priority, 1 is
+    /// second-highest, etc.
     pub fn lock(&self, prio: usize) -> MutexGuard<T> {
         loop {
             if let Some(x) = self.try_lock() {
@@ -58,6 +105,7 @@ impl<T> Mutex<T> {
         }
     }
 
+    /// Attempts to take the lock.  If another thread is holding it, this function returns `None`.
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
         self.inner.try_lock().map(|inner| MutexGuard { __inner: inner })
     }
@@ -78,14 +126,21 @@ impl<T> Inner<T> {
     }
 }
 
+/// An RAII guard.  Frees the mutex when dropped.
+///
+/// It can be dereferenced to access the data protected by the mutex.
 pub struct MutexGuard<'a, T: 'a> {
     __inner: reservable::MutexGuard<'a, Inner<T>>,
 }
 
 impl<'a, T> Drop for MutexGuard<'a, T> {
-    /// Release the lock.  If any threads are ready to take the mutex (ie. are currently blocked
-    /// calling `lock`), then the one with the highest priority will receive it; if not, the mutex
-    /// will just be freed.  This function performs a syscall.  On my machine it takes ~3 μs.
+    /// Release the lock.
+    ///
+    /// If any threads are ready to take the mutex (ie. are currently blocked calling `lock`), then
+    /// the one with the highest priority will receive it; if not, the mutex will just be freed.
+    ///
+    /// This function performs a syscall when there are threads waiting.  On my machine this takes
+    /// ~3 μs.
     fn drop(&mut self) {
         // Release the lock first, and *then* wake the next thread.  If we rely on the Drop impl
         // for simple::MutexGuard then these operations happen in the reverse order, which can lead
