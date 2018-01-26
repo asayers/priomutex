@@ -1,50 +1,42 @@
 /*!
-A spinlock-only mutex with the ability to reserve the lock for another thread.
+A reservable mutex (spinlock-only)
 
-This mutex comes with no blocking support: threads must spin while waiting to lock.  The API is
-exactly like that of `std::sync::Mutex` except that it omits `lock`;  use `try_lock` instead.  The
-lack of blocking support means that this mutex performs no syscalls and uses no platform-specific
-functionality.
+A reservable mutex will be freed as usual when the guard goes out of scope, but it can be explicity
+freed by calling the `release_to` method on the guard.  In this case, it's possible to specify a
+thread to reserve the mutex for.  In this case, `try_lock` will succeed only if called from the
+specified thread.
 
-The mutex can be explicity freed, specifying the `ThreadId` of a thread.  In this case, `try_lock`
-will succeed only if called from the specified thread.
+Reservable mutex comes with no blocking support.  As such, the API is exactly like that of
+`std::sync::Mutex` except that there is no `lock`.  Instead, waiting threads should spin until
+`try_lock` succeeds.  The lack of blocking support means that this mutex is implemented with no
+syscalls or platform-specific functionality.
+
+Reservable mutex comes with no support for poisoning:  if a thread panics while holding the lock,
+the mutex will be freed normally.
 
 ```
 use priomutex::reservable::Mutex;
 use std::sync::Arc;
-use std::sync::mpsc::channel;
 use std::thread;
 
 const N: usize = 10;
 
-// Spawn a few threads to increment a shared variable (non-atomically), and
-// let the main thread know once all increments are done.
-//
-// Here we're using an Arc to share memory among threads, and the data inside
-// the Arc is protected with a mutex.
 let data = Arc::new(Mutex::new(0));
-
-let (tx, rx) = channel();
+let mut threads = vec![];
 for _ in 0..N {
-    let (data, tx) = (data.clone(), tx.clone());
-    thread::spawn(move || {
-        // The shared state can only be accessed once the lock is held.  Here
-        // we spin-wait until the lock is acquired.
+    let data = data.clone();
+    threads.push(thread::spawn(move || {
         let mut data = loop {
             if let Some(x) = data.try_lock() { break x }
             else { thread::yield_now(); }
         };
-        // Our non-atomic increment is safe because we're the only thread
-        // which can access the shared state when the lock is held.
-        *data += 1;
-        if *data == N {
-            tx.send(()).unwrap();
-        }
-        // the lock is unlocked here when `data` goes out of scope.
-    });
+        *data += 1;   // non-atomic increment
+    }));
 }
+for t in threads { t.join(); }
 
-rx.recv().unwrap();
+// data should have been incremented 10 times
+assert_eq!(*data.try_lock().unwrap(), N);
 ```
 */
 
