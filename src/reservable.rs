@@ -55,22 +55,24 @@ use std::hash::{Hash, Hasher};
 use std::thread::{self, ThreadId};
 
 /// A mutex with no blocking support, but the ability to reserve the lock for another thread.
-pub struct Mutex<T> {
-    data: UnsafeCell<T>,
+pub struct Mutex<T: ?Sized> {
     reserved_for: UnsafeCell<Option<ThreadId>>,
     state: AtomicUsize,
+    data: UnsafeCell<T>,
 }
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     pub fn new(data: T) -> Mutex<T> {
         Mutex {
-            data: UnsafeCell::new(data),
             reserved_for: UnsafeCell::new(None),
             state: AtomicUsize::new(STATE_FREE),
+            data: UnsafeCell::new(data),
         }
     }
+}
 
+impl<T: ?Sized> Mutex<T> {
     /// Attempts to acquire this lock.  If the lock is free, or has been assigned to this thread by
     /// the last holder, then the lock will be acquired.
     ///
@@ -130,7 +132,7 @@ impl<T> Mutex<T> {
     }
 
     /// Consumes this mutex, returning the underlying data.
-    pub fn into_inner(self) -> T {
+    pub fn into_inner(self) -> T where T: Sized {
         unsafe {
             // We know statically that there are no outstanding references to `self` so there's no
             // need to lock the inner mutex.
@@ -151,19 +153,19 @@ impl<T> Mutex<T> {
     }
 }
 
-unsafe impl<T: Send> Send for Mutex<T> { }
-unsafe impl<T: Send> Sync for Mutex<T> { }
+unsafe impl<T: ?Sized + Send> Send for Mutex<T> { }
+unsafe impl<T: ?Sized + Send> Sync for Mutex<T> { }
 
 /// An RAII guard.  Frees the mutex when dropped.
 ///
 /// While the guard is still valid, it can be dereferenced to access the data protected by the
 /// mutex.  Attempting to dereference a guard which has been released will result in a panic!
-pub struct MutexGuard<'a, T: 'a> {
+pub struct MutexGuard<'a, T: ?Sized + 'a> {
     __lock: &'a Mutex<T>,
     __is_valid: bool,
 }
 
-impl<'a, T> MutexGuard<'a, T> {
+impl<'a, T: ?Sized> MutexGuard<'a, T> {
     fn new(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
         MutexGuard {
             __lock: mutex,
@@ -194,14 +196,14 @@ impl<'a, T> MutexGuard<'a, T> {
     }
 }
 
-impl<'a, T> Drop for MutexGuard<'a, T> {
+impl<'a, T: ?Sized> Drop for MutexGuard<'a, T> {
     /// Release the mutex, without reserving it for any particular thread.
     fn drop(&mut self) {
         self.release_to(None);
     }
 }
 
-impl<'a, T> Deref for MutexGuard<'a, T> {
+impl<'a, T: ?Sized> Deref for MutexGuard<'a, T> {
     type Target = T;
     /// Will panic if the guard has already been released via a call to `release_to`.
     fn deref(&self) -> &T {
@@ -213,7 +215,7 @@ impl<'a, T> Deref for MutexGuard<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for MutexGuard<'a, T> {
+impl<'a, T: ?Sized> DerefMut for MutexGuard<'a, T> {
     /// Will panic if the guard has already been released via a call to `release_to`.
     fn deref_mut(&mut self) -> &mut T {
         assert!(self.__is_valid);
