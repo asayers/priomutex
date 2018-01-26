@@ -56,23 +56,17 @@ use std::thread::{self, ThreadId};
 
 /// A mutex with no blocking support, but the ability to reserve the lock for another thread.
 pub struct Mutex<T> {
-    inner: UnsafeCell<Inner<T>>,
+    data: UnsafeCell<T>,
+    reserved_for: UnsafeCell<Option<ThreadId>>,
     state: AtomicUsize,
-}
-
-struct Inner<T> {
-    data: T,
-    reserved_for: Option<ThreadId>,
 }
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     pub fn new(data: T) -> Mutex<T> {
         Mutex {
-            inner: UnsafeCell::new(Inner {
-                data: data,
-                reserved_for: None,
-            }),
+            data: UnsafeCell::new(data),
+            reserved_for: UnsafeCell::new(None),
             state: AtomicUsize::new(STATE_FREE),
         }
     }
@@ -92,9 +86,10 @@ impl<T> Mutex<T> {
                     // It's free.  Let's take it!  (Transition 1)
                     let x = self.state.compare_and_swap(orig, STATE_LOCKED, Ordering::SeqCst);
                     if x != orig { continue; }  // The value changed under us, our CAS did nothing. Loop!
-                    // We put the mutex into LOCKED, so this is safe:
-                    let reserved_for = unsafe { (*self.inner.get()).reserved_for };
-                    assert_eq!(reserved_for, None);  // [inv-2]
+                    unsafe {
+                        // We put the mutex into LOCKED, so it's safe to access reserved_for
+                        assert_eq!(*self.reserved_for.get(), None, "inv-2 violated");
+                    }
                     return Some(MutexGuard::new(self));
                 }
                 STATE_LOCKED => {
@@ -114,17 +109,19 @@ impl<T> Mutex<T> {
                     // It was reserved for a thread with our hash.  Let's check if it's us.  (Transition 2)
                     let x = self.state.compare_and_swap(orig, STATE_CHECKING, Ordering::SeqCst);
                     if x != orig { continue; }  // The value changed under us, our CAS did nothing. Loop!
-                    // We put the mutex into CHECKING, so this is safe:
-                    let reserved_for = unsafe { (*self.inner.get()).reserved_for };
-                    if reserved_for == Some(me) {
-                        // It *was* reserved for us!  Take the lock.  (Transition 3)
-                        let x = self.state.swap(STATE_LOCKED, Ordering::SeqCst);
-                        assert_eq!(x, STATE_CHECKING);  // [inv-1]
-                        return Some(MutexGuard::new(self));
+                    let reserved_for_me = unsafe {
+                        // We put the mutex into CHECKING, so it's safe to access reserved_for
+                        *self.reserved_for.get() == Some(me)
+                    };
+                    if reserved_for_me {
+                            // It *was* reserved for us!  Take the lock.  (Transition 3)
+                            let x = self.state.swap(STATE_LOCKED, Ordering::SeqCst);
+                            assert_eq!(x, STATE_CHECKING, "inv-1 violated");
+                            return Some(MutexGuard::new(self));
                     } else {
                         // It was reserved for someone else...  Put it back how we found it.  (Transition 4)
                         let x = self.state.swap(orig, Ordering::SeqCst);
-                        assert_eq!(x, STATE_CHECKING);  // [inv-1]
+                        assert_eq!(x, STATE_CHECKING, "inv-1 violated");
                         return None;
                     }
                 }
@@ -134,19 +131,23 @@ impl<T> Mutex<T> {
 
     /// Consumes this mutex, returning the underlying data.
     pub fn into_inner(self) -> T {
-        // We know statically that there are no outstanding references to
-        // `self` so there's no need to lock the inner mutex.
-        unsafe { self.inner.into_inner().data }
+        unsafe {
+            // We know statically that there are no outstanding references to `self` so there's no
+            // need to lock the inner mutex.
+            self.data.into_inner()
+        }
     }
 
     /// Returns a mutable reference to the underlying data.
     ///
-    /// Since this call borrows the `Mutex` mutably, no actual locking needs to
-    /// take place---the mutable borrow statically guarantees no locks exist.
+    /// Since this call borrows the `Mutex` mutably, no actual locking needs to take place---the
+    /// mutable borrow statically guarantees no locks exist.
     pub fn get_mut(&mut self) -> &mut T {
-        // We know statically that there are no other references to `self`, so
-        // there's no need to lock the inner mutex.
-        unsafe { &mut (*self.inner.get()).data }
+        unsafe {
+            // We know statically that there are no other references to `self`, so there's no need
+            // to lock the inner mutex.
+            &mut *self.data.get()
+        }
     }
 }
 
@@ -180,8 +181,10 @@ impl<'a, T> MutexGuard<'a, T> {
     /// the guard goes out of scope.
     pub fn release_to(&mut self, thread_id: Option<ThreadId>) {
         if self.__is_valid {
-            // We put the mutex into LOCKED (inv-3), so this is safe:
-            unsafe { self.__lock.inner.get().as_mut().unwrap().reserved_for = thread_id; }
+            unsafe {
+                // We put the mutex into LOCKED (inv-3), so this is safe:
+                *self.__lock.reserved_for.get() = thread_id;
+            }
             self.__is_valid = false;
             let new_state = thread_id.map(hash_tid).unwrap_or(STATE_FREE);
             // Transition 5 or Transition 6
@@ -203,8 +206,10 @@ impl<'a, T> Deref for MutexGuard<'a, T> {
     /// Will panic if the guard has already been released via a call to `release_to`.
     fn deref(&self) -> &T {
         assert!(self.__is_valid);
-        // We put the mutex into LOCKED (inv-3), so this is safe:
-        unsafe { &(*self.__lock.inner.get()).data }
+        unsafe {
+            // We put the mutex into LOCKED (inv-3), so this is safe:
+            &(*self.__lock.data.get())
+        }
     }
 }
 
@@ -212,8 +217,10 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
     /// Will panic if the guard has already been released via a call to `release_to`.
     fn deref_mut(&mut self) -> &mut T {
         assert!(self.__is_valid);
-        // The state is LOCKED (inv-3), so this is safe:
-        unsafe { &mut (*self.__lock.inner.get()).data }
+        unsafe {
+            // We put the mutex into LOCKED (inv-3), so this is safe:
+            &mut (*self.__lock.data.get())
+        }
     }
 }
 
@@ -238,11 +245,11 @@ The allowed transitions are:
 If you change the state to LOCKED or CHECKING, you have exclusive access to the inner until you
 change the state back to FREE or RESERVED.
 
-[inv-1]: If the state is LOCKED or CHECKING, only the thread which moved the mutex into that state
-         is allowed to update the state.
-[inv-2]: If the state is FREE, then `reserved_for` must be None.
-[inv-3]: If a mutex guard exists and is valid, then the state must be LOCKED.  Furthermore, the
-         mutex was put into that state by the thread holding the reference to the valid guard.
+ inv-1: If the state is LOCKED or CHECKING, only the thread which moved the mutex into that state
+        is allowed to update the state.
+ inv-2: If the state is FREE, then `reserved_for` must be None.
+ inv-3: If a mutex guard exists and is valid, then the state must be LOCKED.  Furthermore, the
+        mutex was put into that state by the thread holding the reference to the valid guard.
 
 */
 
