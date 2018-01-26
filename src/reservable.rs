@@ -303,4 +303,37 @@ mod tests {
         for tid in tids { tid.join().unwrap(); }
         println!("{:?}", *h.try_lock().unwrap());
     }
+
+    #[test]
+    fn test_hash_tid() {
+        fn mk_thread() -> ThreadId {
+            thread::spawn(||{ thread::sleep(Duration::from_millis(1)); }).thread().id()
+        }
+        const N: usize = 10_000;
+        let hashes: Vec<usize> = (0..N).map(|_| hash_tid(mk_thread())).collect();
+        let mut hashes_sorted = hashes.clone(); hashes_sorted.sort();
+        let mut hashes_uniq = hashes_sorted.clone(); hashes_uniq.dedup();
+        assert_eq!(hashes.len(), N, "wrong number of threads!?");
+        assert_eq!(hashes_sorted, hashes_uniq, "hash collision! oh no!");
+        assert_eq!(hashes_sorted, hashes, "hashes weren't monotonically increasing... weird...");
+    }
+}
+
+#[cfg(test)]
+mod benches {
+    extern crate easybench;
+
+    use self::easybench::*;
+    use std::thread;
+    use std::time::*;
+    use super::*;
+
+    #[test]
+    fn bench_hash_tid() {
+        fn mk_thread() -> ThreadId {
+            thread::spawn(||{ thread::sleep(Duration::from_millis(1)); }).thread().id()
+        }
+        let tid = mk_thread();
+        println!("{}", bench_env(tid, |tid| { hash_tid(*tid) }));
+    }
 }
