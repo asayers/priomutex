@@ -10,34 +10,45 @@ The other difference is that `std::sync::Mutex` implements `Sync` but not `Clone
 need to wrap a priomutex in an `Arc`, and (2) that we can't implement `into_inner` and `get_mut`.
 
 ```
+# extern crate rand;
+# extern crate priomutex;
+# fn main() {
 use priomutex::Mutex;
-use std::sync::mpsc::channel;
+use rand::{Rng, thread_rng};
+use std::mem;
 use std::thread;
+use std::time::Duration;
 
 const N: usize = 10;
 
-// Spawn a few threads to increment a shared variable (non-atomically), and
-// let the main thread know once all increments are done.
-let data = Mutex::new(0);
+let data = Mutex::new(Vec::new());
+let guard = data.lock(0);
 
-let (tx, rx) = channel();
+let mut tids = Vec::new();
 for _ in 0..N {
-    let (data, tx) = (data.clone(), tx.clone());
-    thread::spawn(move || {
-        // The shared state can only be accessed once the lock is held.  Here
-        // we spin-wait until the lock is acquired.
-        let mut data = data.lock(0);
-        // Our non-atomic increment is safe because we're the only thread
-        // which can access the shared state when the lock is held.
-        *data += 1;
-        if *data == N {
-            tx.send(()).unwrap();
-        }
-        // the lock is unlocked here when `data` goes out of scope.
-    });
+    let data = data.clone();
+    tids.push(thread::spawn(move || {
+        let mut rng = thread_rng();
+        let prio = rng.gen::<usize>();      // generate a random priority
+        let mut data = data.lock(prio);     // wait on the mutex
+        data.push(prio);                    // push priority onto the list
+    }));
 }
 
-rx.recv().unwrap();
+// Give the threads time to spawn and wait on the mutex
+thread::sleep(Duration::from_millis(10));
+
+mem::drop(guard);             // go go go!
+for t in tids { t.join(); }   // wait until they've all modified the mutex
+
+// Check that every thread pushed an element
+let d1 = data.lock(0);
+assert_eq!(d1.len(), N);
+
+// Check that the threads were woken in priority order
+let mut d2 = d1.clone(); d2.sort();
+assert_eq!(*d1, d2);
+# }
 ```
 
 ## Poisoning
