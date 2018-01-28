@@ -58,17 +58,18 @@ lock panics.
 
 */
 
+extern crate pwmutex;
+
 use std::collections::BinaryHeap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{mpsc, Arc};
-use std::thread::{self, Thread};
+use std::thread::{self, Thread, ThreadId};
 
 mod with_prio; use with_prio::*;
-pub mod reservable;
 
 /// A mutex which allows waiting threads to specify a priority.
 pub struct Mutex<T> {
-    inner: Arc<reservable::Mutex<Inner<T>>>,
+    inner: Arc<pwmutex::Mutex<Inner<T>, ThreadId>>,
     tx: mpsc::Sender<WithPrio<Thread>>,
 }
 
@@ -90,7 +91,7 @@ impl<T> Mutex<T> {
     pub fn new(data: T) -> Mutex<T> {
         let (tx, rx) = mpsc::channel();
         Mutex {
-            inner: Arc::new(reservable::Mutex::new(Inner {
+            inner: Arc::new(pwmutex::Mutex::new(Inner {
                 data: data,
                 rx: rx,
                 heap: BinaryHeap::new(),
@@ -118,7 +119,7 @@ impl<T> Mutex<T> {
 
     /// Attempts to take the lock.  If another thread is holding it, this function returns `None`.
     pub fn try_lock(&self) -> Option<MutexGuard<T>> {
-        self.inner.try_lock().map(|inner| MutexGuard { __inner: inner })
+        self.inner.try_lock_pw(thread::current().id()).map(|inner| MutexGuard { __inner: inner })
     }
 }
 
@@ -141,7 +142,7 @@ impl<T> Inner<T> {
 ///
 /// It can be dereferenced to access the data protected by the mutex.
 pub struct MutexGuard<'a, T: 'a> {
-    __inner: reservable::MutexGuard<'a, Inner<T>>,
+    __inner: pwmutex::MutexGuard<'a, Inner<T>, ThreadId>,
 }
 
 impl<'a, T> Drop for MutexGuard<'a, T> {
@@ -157,7 +158,10 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
         // for simple::MutexGuard then these operations happen in the reverse order, which can lead
         // to a deadlock.
         let next_thread = self.__inner.next_thread();
-        self.__inner.release_to(next_thread.as_ref().map(|x| x.id()));
+        match next_thread.as_ref() {
+            Some(thread) => self.__inner.release_protected(thread.id()),
+            None => self.__inner.release(),
+        }
         if let Some(h) = next_thread {
             h.unpark();
         }

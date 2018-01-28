@@ -1,16 +1,17 @@
 [package]
-name = "priomutex"
-version = "0.1.1"
+name = "pwmutex"
+version = "0.1.0"
 authors = ["Alex Sayers <alex.sayers@gmail.com>"]
-description = "A mutex where waiting threads specify a priority"
-documentation = "https://docs.rs/priomutex/"
+description = "A mutex where which can be password-protected"
+documentation = "https://docs.rs/pwmutex/"
 repository = "https://github.com/asayers/priomutex"
 readme = "README"
 keywords = ["mutex"]
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-pwmutex = { path = "pwmutex" }
+fnv = "1.0"
 
 [dev-dependencies]
+easybench = "0.1"
 rand = "0.4"
