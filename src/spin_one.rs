@@ -1,3 +1,16 @@
+/*!
+A high-performance variant of priomutex.
+
+This mutex is very similar to the one in the root of the crate, except that the next-in-line thread
+busy-waits.  This means that dropping the `MutexGuard` never requires any syscalls, and takes
+~200ns on my machine (as opposed to ~3000ns for the starndard priomutex).  No matter how many
+threads are waiting on your mutex, it's guaranteed that only one will be busy-waiting at any time.
+
+Suppose thread 1 has the lock and thread 2 is busy-waiting for it.  Now thread 3 tries to lock the
+mutex with a higher priority then thread 2.  Thread 3 will now busy-wait, while thread 2 goes to
+sleep.  When thread 1 releases the lock, thread 3's `lock` call will return, while thread 2 wakes
+up and starts busy-waiting once more.
+*/
 use common::*;
 use std::collections::BinaryHeap;
 use std::mem;

@@ -1,6 +1,5 @@
 use common::*;
 use std::collections::BinaryHeap;
-use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::sync::{self, PoisonError, TryLockError};
 use std::thread::{self, Thread};
@@ -26,16 +25,16 @@ impl<T> Mutex<T> {
     /// Waiting threads are woken up in order of priority.  0 is the highest priority, 1 is
     /// second-highest, etc.
     pub fn lock(&self, prio: usize) -> Result<MutexGuard<T>, PoisonError<MutexGuard<T>>> {
-        let prio = Prio::new(prio);
         loop {
-            let mut heap = self.heap.lock().unwrap();
             match self.try_lock() {
                 Ok(guard) => return Ok(guard),  // mission accomplished!
                 Err(TryLockError::WouldBlock) => {} // carry on...
                 Err(TryLockError::Poisoned(e)) => return Err(e),
             }
-            heap.push(PV { p: prio, v: thread::current() });
-            mem::drop(heap);
+            {
+                let mut heap = self.heap.lock().unwrap();
+                heap.push(PV { p: Prio::new(prio), v: thread::current() });
+            }
             thread::park();
         }
     }
@@ -64,7 +63,7 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     ///
     /// This function performs no syscalls.
     fn drop(&mut self) {
-        if let Some(x) = self.1.heap.lock().unwrap().pop() { x.v.unpark(); }  // wake the next spinner
+        if let Some(x) = self.1.heap.lock().unwrap().pop() { x.v.unpark(); }  // wake the next thread
     }
 }
 

@@ -1,11 +1,45 @@
 extern crate priomutex;
 extern crate rand;
 
-use priomutex::*;
+use priomutex::simple::Mutex;
 use rand::*;
+use std::mem;
 use std::sync::Arc;
 use std::thread;
 use std::time::*;
+
+#[test]
+fn foobarqux() {
+    const N: usize = 10;
+
+    let m = Arc::new(Mutex::new(Vec::new()));
+    let guard = m.lock(0).unwrap();
+
+    let mut tids = Vec::new();
+    for _ in 0..N {
+        let m = m.clone();
+        tids.push(thread::spawn(move || {
+            let mut rng = thread_rng();
+            let prio = rng.gen::<usize>();        // generate a random priority
+            let mut data = m.lock(prio).unwrap(); // wait on the mutex
+            data.push(prio);                      // push priority onto the list
+        }));
+    }
+
+    // Give the threads time to spawn and wait on the mutex
+    thread::sleep(Duration::from_millis(10));
+
+    mem::drop(guard);             // go go go!
+    for t in tids { t.join().unwrap(); }   // wait until they've all modified the mutex
+
+    // Check that every thread pushed an element
+    let d1 = m.lock(0).unwrap();
+    assert_eq!(d1.len(), N);
+
+    // Check that the threads were woken in priority order
+    let mut d2 = d1.clone(); d2.sort();
+    assert_eq!(*d1, d2);
+}
 
 #[test]
 fn test() {
@@ -25,6 +59,7 @@ fn test() {
 
 // Check that the releasing thread doesn't have an unfair advantage in re-taking
 #[test]
+#[should_panic]
 fn test_no_unfair_advantage() {
     let m1 = Arc::new(Mutex::new(0));
     let m2 = m1.clone();
