@@ -25,18 +25,22 @@ impl<T> Mutex<T> {
     /// Waiting threads are woken up in order of priority.  0 is the highest priority, 1 is
     /// second-highest, etc.
     pub fn lock(&self, prio: usize) -> Result<MutexGuard<T>, PoisonError<MutexGuard<T>>> {
-        loop {
-            match self.try_lock() {
-                Ok(guard) => return Ok(guard),  // mission accomplished!
-                Err(TryLockError::WouldBlock) => {} // carry on...
-                Err(TryLockError::Poisoned(e)) => return Err(e),
-            }
-            {
-                let mut heap = self.heap.lock().unwrap();
-                heap.push(PV { p: Prio::new(prio), v: thread::current() });
-            }
-            thread::park();
+        // is it free?
+        match self.try_lock() {
+            Ok(guard) => return Ok(guard),  // mission accomplished!
+            Err(TryLockError::WouldBlock) => {} // carry on...
+            Err(TryLockError::Poisoned(e)) => return Err(e),
         }
+        // no. let's sleep
+        {
+            let mut heap = self.heap.lock().unwrap();
+            heap.push(PV { p: Prio::new(prio), v: thread::current() });
+        }
+        thread::park();
+        // ok, we've been explicitly woken up.  it *must* be free! (soon)
+        self.data.lock()
+            .map(|g| MutexGuard(g, self))
+            .map_err(|pe| PoisonError::new(MutexGuard(pe.into_inner(), self)))
     }
 
     /// Attempts to take the lock.  If another thread is holding it, this function returns `None`.
@@ -63,7 +67,8 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     ///
     /// This function performs no syscalls.
     fn drop(&mut self) {
-        if let Some(x) = self.1.heap.lock().unwrap().pop() { x.v.unpark(); }  // wake the next thread
+        let mut heap = self.1.heap.lock().unwrap();
+        if let Some(x) = heap.pop() { x.v.unpark(); }  // wake the next thread
     }
 }
 
