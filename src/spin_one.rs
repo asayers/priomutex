@@ -21,7 +21,7 @@ use std::thread::{self, Thread};
 /// A mutex which allows waiting threads to specify a priority.
 pub struct Mutex<T> {
     spinner_lock: sync::Mutex<()>,
-    heap: sync::Mutex<BinaryHeap<PV<Prio, Thread>>>,
+    heap: sync::Mutex<BinaryHeap<PV<Prio, WakeToken>>>,
     data: sync::Mutex<T>,
 }
 
@@ -47,14 +47,14 @@ impl<T> Mutex<T> {
             let mut heap = self.heap.lock().unwrap();
             let should_sleep = match self.try_lock() {
                 Ok(guard) => {
-                    if let Some(x) = heap.pop() { x.v.unpark(); }  // wake the next spinner
+                    if let Some(x) = heap.pop() { x.v.wake(); }  // wake the next spinner
                     return Ok(guard);                              // mission accomplished!
                 }
                 Err(TryLockError::WouldBlock) => {
                     if spinner_lock.is_some() {              // are we the spinner?
                         if heap.peek().map(|sleeper| sleeper.p < prio).unwrap_or(false) {
                             spinner_lock = None;             // release the spinner lock
-                            heap.pop().unwrap().v.unpark();  // ... wake the rightful spinner
+                            heap.pop().unwrap().v.wake();  // ... wake the rightful spinner
                             true                             // ... and then sleep
                         } else {
                             false                            // we're the rightful spinner
@@ -72,12 +72,13 @@ impl<T> Mutex<T> {
                 }
                 Err(TryLockError::Poisoned(e)) => return Err(e),
             };
+            let (sleep_token, wake_token) = create_tokens();
             if should_sleep {
-                heap.push(PV { p: prio, v: thread::current() });
+                heap.push(PV { p: prio, v: wake_token });
             }
             mem::drop(heap);
             if should_sleep {
-                thread::park();
+                sleep_token.sleep();
             } else {
                 thread::yield_now();
             }

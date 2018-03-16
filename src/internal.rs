@@ -57,3 +57,53 @@ impl<P:PartialOrd,V> PartialOrd for PV<P,V> {
 impl<P:Ord,V> Ord for PV<P,V> {
     fn cmp(&self, other: &PV<P,V>) -> Ordering { other.p.cmp(&self.p) }
 }
+
+pub fn create_tokens() -> (SleepToken, WakeToken) {
+    let token = Arc::new(Token {
+        thread: thread::current(),
+        is_woken: AtomicBool::new(false),
+    });
+    (SleepToken(token.clone()), WakeToken(token))
+}
+
+#[derive(Debug)]
+struct Token {
+    thread: Thread,
+    is_woken: AtomicBool,
+}
+#[derive(Debug)]
+pub struct SleepToken(Arc<Token>);
+#[derive(Debug)]
+pub struct WakeToken(Arc<Token>);
+
+// unsafe impl Send for WakeToken {}
+// impl !Send for SleepToken {}
+// impl !Sync for SleepToken {}
+
+impl SleepToken {
+    pub fn sleep(self) {
+        while !self.0.is_woken.load(atomic::Ordering::SeqCst) {
+            thread::park();
+        }
+    }
+}
+
+impl WakeToken {
+    pub fn wake(self) {
+        let already_woken = self.0.is_woken.compare_and_swap(false, true, atomic::Ordering::SeqCst);
+        assert!(!already_woken, "this token was signalled twice!");
+        self.0.thread.unpark();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_tokens() {
+        let (sleep_token, wake_token) = create_tokens();
+        wake_token.wake();
+        sleep_token.sleep();
+        println!("woke!");
+    }
+}

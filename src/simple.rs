@@ -2,11 +2,11 @@ use internal::*;
 use std::collections::BinaryHeap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{self, PoisonError, TryLockError};
-use std::thread::{self, Thread};
 
 /// A mutex which allows waiting threads to specify a priority.
+#[derive(Debug)]
 pub struct Mutex<T> {
-    heap: sync::Mutex<BinaryHeap<PV<Prio, Thread>>>,
+    heap: sync::Mutex<BinaryHeap<PV<Prio, WakeToken>>>,
     data: sync::Mutex<T>,
 }
 
@@ -32,11 +32,12 @@ impl<T> Mutex<T> {
             Err(TryLockError::Poisoned(e)) => return Err(e),
         }
         // no. let's sleep
+        let (sleep_token, wake_token) = create_tokens();
         {
             let mut heap = self.heap.lock().unwrap();
-            heap.push(PV { p: Prio::new(prio), v: thread::current() });
+            heap.push(PV { p: Prio::new(prio), v: wake_token });
         }
-        thread::park();
+        sleep_token.sleep();
         // ok, we've been explicitly woken up.  it *must* be free! (soon)
         self.data.lock()
             .map(|g| MutexGuard(g, self))
@@ -68,7 +69,7 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     /// This function performs no syscalls.
     fn drop(&mut self) {
         let mut heap = self.1.heap.lock().unwrap();
-        if let Some(x) = heap.pop() { x.v.unpark(); }  // wake the next thread
+        if let Some(x) = heap.pop() { x.v.wake(); }  // wake the next thread
     }
 }
 
