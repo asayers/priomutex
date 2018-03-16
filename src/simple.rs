@@ -1,4 +1,4 @@
-use common::*;
+use internal::*;
 use std::collections::BinaryHeap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{self, PoisonError, TryLockError};

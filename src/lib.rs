@@ -31,4 +31,4 @@ extern crate fnv;
 
 mod simple; pub use simple::*;
 pub mod spin_one;
-mod common;
+pub mod internal;

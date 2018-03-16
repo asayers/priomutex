@@ -11,7 +11,7 @@ mutex with a higher priority then thread 2.  Thread 3 will now busy-wait, while 
 sleep.  When thread 1 releases the lock, thread 3's `lock` call will return, while thread 2 wakes
 up and starts busy-waiting once more.
 */
-use common::*;
+use internal::*;
 use std::collections::BinaryHeap;
 use std::mem;
 use std::ops::{Deref, DerefMut};
