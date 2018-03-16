@@ -1,29 +1,37 @@
 /*!
-A mutex where waiting threads to specify a priority.
+A mutex where waiting threads specify a priority.
 
-The API is very similar to `std::sync::Mutex`.  The key difference, of course, is that `lock` takes
-a priority.  If multiple threads are waiting for the mutex when it's freed, the one which gave the
-highest priorty will recieve it.
+Exactly like `std::sync::Mutex`, except that `lock` takes a priority (integer, 0 is high).  When
+the mutex is released, the thread which gave the highest priority will take the lock.
 
 ```
-# use std::time::Duration;
-# use std::thread;
-# use std::sync::Arc;
-use priomutex::simple::Mutex;
+# extern crate rand;
+# extern crate priomutex;
+# fn main() {
+use priomutex::Mutex;
+use rand::{Rng, thread_rng};
+use std::mem;
+use std::sync::Arc;
+use std::thread;
 
-let mutex = Arc::new(Mutex::new(0));
-for n in 0..3 {
+let mutex = Arc::new(Mutex::new(()));
+let guard = mutex.lock(0).unwrap();  // take the lock
+
+for _ in 0..10 {
     let mutex = mutex.clone();
     thread::spawn(move|| {
-        loop {
-            {
-                let mut data = mutex.lock(0).unwrap();
-                *data += 1;
-            }
-            thread::sleep(Duration::from_millis(1000));
-        }
+        let p = thread_rng().gen::<usize>(); // generate a random priority
+        let guard = mutex.lock(p).unwrap();  // block until we take the lock
+        println!("Took the lock: {}", p);
+        // lock is released here
     });
 }
+
+thread::sleep_ms(100);  // give the threads a chance to spawn
+mem::drop(guard);       // go go go!
+
+// At this point you should see the lock being taken in priority-order
+# }
 ```
 */
 
