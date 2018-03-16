@@ -30,5 +30,5 @@ for n in 0..3 {
 extern crate fnv;
 
 mod simple; pub use simple::*;
-pub mod spin_one;
+// pub mod spin_one;   // contains a deadlock
 pub mod internal;
