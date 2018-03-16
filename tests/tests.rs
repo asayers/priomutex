@@ -3,34 +3,35 @@ extern crate rand;
 
 use priomutex::*;
 use rand::*;
+use std::sync::Arc;
 use std::thread;
 use std::time::*;
 
 #[test]
 fn test() {
-    let h = Mutex::new(vec![]);
+    let h = Arc::new(Mutex::new(vec![]));
     let mut tids = vec![];
     for i in 0..5 {
         let h = h.clone();
         tids.push(thread::spawn(move|| {
-            let mut x = h.lock(10-i);
+            let mut x = h.lock(10-i).unwrap();
             thread::sleep(Duration::from_millis(10));
             x.push(i);
         }));
     }
     for tid in tids { tid.join().unwrap(); }
-    println!("{:?}", *h.lock(9));
+    println!("{:?}", *h.lock(9).unwrap());
 }
 
 // Check that the releasing thread doesn't have an unfair advantage in re-taking
 #[test]
 fn test_no_unfair_advantage() {
-    let m1 = Mutex::new(0);
+    let m1 = Arc::new(Mutex::new(0));
     let m2 = m1.clone();
     {
-        let mut g = m1.lock(0);   // thread 1 takes the lock first
+        let mut g = m1.lock(0).unwrap();   // thread 1 takes the lock first
         thread::spawn(move|| {       // thread 2 simply:
-            let mut g = m2.lock(0);  // waits for the lock...
+            let mut g = m2.lock(0).unwrap();  // waits for the lock...
             thread::sleep(Duration::from_millis(1000));  // and holds it forever (effectively)
             *g += 1;
         });
@@ -38,7 +39,7 @@ fn test_no_unfair_advantage() {
         *g += 1;
     } // now release... and immediately try to re-acquire
     for _ in 0..100 {
-        if m1.try_lock().is_some() {
+        if m1.try_lock().is_ok() {
             panic!("try_lock succeeded when there was a thread waiting!");
         }
     }
@@ -46,7 +47,7 @@ fn test_no_unfair_advantage() {
 
 #[test]
 fn test_bench() {
-    let mutex = Mutex::new(Instant::now());
+    let mutex = Arc::new(Mutex::new(Instant::now()));
     let mut tids = vec![];
     for n in 1..10 {
         let mutex = mutex.clone();
@@ -54,7 +55,7 @@ fn test_bench() {
             let mut rng = thread_rng();
             for i in 0..10 {
                 let ts = {
-                    let mut x = mutex.lock(n);
+                    let mut x = mutex.lock(n).unwrap();
                     println!("thread {}: LOCK    #{:<2} {:>5} ns", n, i, x.elapsed().subsec_nanos());
                     thread::sleep(Duration::from_millis(rng.gen::<u64>() % 32));
                     let ts = Instant::now();
@@ -69,14 +70,14 @@ fn test_bench() {
     for t in tids {
         t.join().unwrap();
     }
-    let guard = mutex.lock(0);
+    let guard = mutex.lock(0).unwrap();
     println!("{:?}", *guard);
 }
 
 /*
 #[test]
 fn test_thread_pool_free() {
-    let mutex = Mutex::new(0u8);
+    let mutex = Arc::new(Mutex::new(0u8));
     let h1 = mutex.clone();
     let h2 = mutex.clone();
     thread::spawn(move|| { let guard = h1.lock(0).unwrap(); println!("got mutex: t0"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
@@ -86,7 +87,7 @@ fn test_thread_pool_free() {
 
 #[test]
 fn test_thread_pool_neq() {
-    let mutex = Mutex::new(0u8);
+    let mutex = Arc::new(Mutex::new(0u8));
     let h1 = mutex.clone();
     let h2 = mutex.clone();
     thread::spawn(move|| { let guard = h2.lock(1).unwrap(); println!("got mutex: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
@@ -97,7 +98,7 @@ fn test_thread_pool_neq() {
 
 #[test]
 fn test_thread_pool_eq() {
-    let mutex = Mutex::new(0u8);
+    let mutex = Arc::new(Mutex::new(0u8));
     let h1 = mutex.clone();
     let h2 = mutex.clone();
     thread::spawn(move|| { let guard = h2.lock(0).unwrap(); println!("got mutex: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
@@ -107,7 +108,7 @@ fn test_thread_pool_eq() {
 
 #[test]
 fn test_thread_pool_1() {
-    let mutex = Mutex::new(0u8);
+    let mutex = Arc::new(Mutex::new(0u8));
     let x = mutex.lock(0).unwrap();
     x.release();
     let x = mutex.lock(1).unwrap();
