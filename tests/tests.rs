@@ -1,7 +1,7 @@
 extern crate priomutex;
 extern crate rand;
 
-use priomutex::simple::Mutex;
+use priomutex::Mutex;
 use rand::*;
 use std::mem;
 use std::sync::Arc;
@@ -27,9 +27,9 @@ fn foobarqux() {
     }
 
     // Give the threads time to spawn and wait on the mutex
-    thread::sleep(Duration::from_millis(10));
-
+    thread::sleep(Duration::from_millis(100));
     mem::drop(guard);             // go go go!
+
     for t in tids { t.join().unwrap(); }   // wait until they've all modified the mutex
 
     // Check that every thread pushed an element
