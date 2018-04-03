@@ -11,26 +11,35 @@ mutex with a higher priority then thread 2.  Thread 3 will now busy-wait, while 
 sleep.  When thread 1 releases the lock, thread 3's `lock` call will return, while thread 2 wakes
 up and starts busy-waiting once more.
 */
-use internal::*;
+
 use std::collections::BinaryHeap;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::sync::{self, PoisonError, TryLockError};
-use std::thread::{self, Thread};
+use token::*;
+use types::*;
 
 /// A mutex which allows waiting threads to specify a priority.
+#[derive(Debug)]
 pub struct Mutex<T> {
-    spinner_lock: sync::Mutex<()>,
-    heap: sync::Mutex<BinaryHeap<PV<Prio, WakeToken>>>,
+    bookkeeping: sync::Mutex<Bookkeeping>,
     data: sync::Mutex<T>,
+}
+
+// Essentially all operations on `Mutex` are done while holding the bookkeeping lock.  This means
+// that it's impossible that eg. one thread will be trying to lock the mutex while another one is
+// dropping it.
+#[derive(Debug)]
+struct Bookkeeping {
+    heap: BinaryHeap<PV<usize, WakeToken>>,
+    no_spinner: bool, // there's no spinner AND there noone waiting to become the spinner
 }
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     pub fn new(data: T) -> Mutex<T> {
         Mutex {
-            spinner_lock: sync::Mutex::new(()),
-            heap: sync::Mutex::new(BinaryHeap::new()),
+            bookkeeping: sync::Mutex::new(Bookkeeping { heap: BinaryHeap::new(), no_spinner: true }),
             data: sync::Mutex::new(data),
         }
     }
@@ -40,59 +49,68 @@ impl<T> Mutex<T> {
     ///
     /// Waiting threads are woken up in order of priority.  0 is the highest priority, 1 is
     /// second-highest, etc.
-    pub fn lock(&self, prio: usize) -> Result<MutexGuard<T>, PoisonError<MutexGuard<T>>> {
-        let prio = Prio::new(prio);
-        let mut spinner_lock: Option<sync::MutexGuard<()>> = None;
-        loop {
-            let mut heap = self.heap.lock().unwrap();
-            let should_sleep = match self.try_lock() {
-                Ok(guard) => {
-                    if let Some(x) = heap.pop() { x.v.wake(); }  // wake the next spinner
-                    return Ok(guard);                              // mission accomplished!
-                }
-                Err(TryLockError::WouldBlock) => {
-                    if spinner_lock.is_some() {              // are we the spinner?
-                        if heap.peek().map(|sleeper| sleeper.p < prio).unwrap_or(false) {
-                            spinner_lock = None;             // release the spinner lock
-                            heap.pop().unwrap().v.wake();  // ... wake the rightful spinner
-                            true                             // ... and then sleep
-                        } else {
-                            false                            // we're the rightful spinner
-                        }
-                    } else {
-                        match self.spinner_lock.try_lock() {
-                            Ok(guard) => {
-                                spinner_lock = Some(guard);  // let's stash the lock
-                                false                        // we're now the spinner!
-                            }
-                            Err(TryLockError::WouldBlock) => true, // someone else already spinning
-                            Err(TryLockError::Poisoned(_)) => panic!(),
-                        }
-                    }
-                }
-                Err(TryLockError::Poisoned(e)) => return Err(e),
-            };
-            let (sleep_token, wake_token) = create_tokens();
-            if should_sleep {
-                heap.push(PV { p: prio, v: wake_token });
-            }
-            mem::drop(heap);
-            if should_sleep {
-                sleep_token.sleep();
-            } else {
-                thread::yield_now();
-            }
+    pub fn lock(&self, prio: usize) -> sync::LockResult<MutexGuard<T>> {
+        let mut bk = self.bookkeeping.lock().unwrap();
+        let (sleep_token, wake_token) = create_tokens();
+        bk.heap.push(PV { p: prio, v: wake_token });
+        if bk.no_spinner {
+            // We're the spinner now
+            bk.no_spinner = false;
+            bk.heap.pop().unwrap().v.wake();
         }
+        mem::drop(bk);
+        sleep_token.sleep();
+
+        let guard = loop {
+            // Our WakeToken has been signalled.  That means we're the spinner now!
+            match self.data.try_lock() {
+                Ok(guard) => break MutexGuard(guard),
+                Err(TryLockError::WouldBlock) => { /* loop */ }
+                Err(TryLockError::Poisoned(pe)) =>
+                    return Err(PoisonError::new(MutexGuard(pe.into_inner()))),
+            }
+
+            // sync::atomic::spin_loop_hint();
+
+            let mut bk = self.bookkeeping.lock().unwrap();
+            let (sleep_token, wake_token) = create_tokens();
+            bk.heap.push(PV { p: prio, v: wake_token });
+            bk.heap.pop().unwrap().v.wake();
+            mem::drop(bk);
+            sleep_token.sleep();
+
+        };
+
+        // We took the lock
+        let mut bk = self.bookkeeping.lock().unwrap();
+        if let Some(x) = bk.heap.pop() {
+            // Wake the next spinner
+            x.v.wake();
+        } else {
+            // Let the next thread to lock become the spinner
+            bk.no_spinner = true;
+        }
+        Ok(guard)
     }
 
-    /// Attempts to take the lock.  If another thread is holding it, this function returns `None`.
+    /// Attempts to take the lock.  Fails if another thread it already holding it, or is another
+    /// thread is already waiting to take it.
     pub fn try_lock(&self) -> sync::TryLockResult<MutexGuard<T>> {
-        self.data.try_lock().map(|guard| MutexGuard(guard)).map_err(|tle| match tle {
-            TryLockError::WouldBlock => TryLockError::WouldBlock,
-            TryLockError::Poisoned(pe) => TryLockError::Poisoned(
-                PoisonError::new(MutexGuard(pe.into_inner()))
-            ),
-        })
+        unimplemented!()
+        // let bk = self.bookkeeping.lock().unwrap();
+        // if bk.no_spinner {
+        //     // We took it!  The data must be free (soon).
+        //     match self.data.try_lock() {
+        //         Ok(guard) => Ok(MutexGuard(guard)),
+        //         Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
+        //         Err(TryLockError::Poisoned(pe)) => Err(TryLockError::Poisoned(
+        //             PoisonError::new(MutexGuard(pe.into_inner()))
+        //         )),
+        //     }
+        // } else {
+        //     // It's already taken
+        //     Err(TryLockError::WouldBlock)
+        // }
     }
 }
 
@@ -113,4 +131,3 @@ impl<'a, T> DerefMut for MutexGuard<'a, T> {
         &mut *self.0
     }
 }
-

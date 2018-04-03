@@ -39,7 +39,7 @@ mem::drop(guard);       // go go go!
 */
 
 mod simple; pub use simple::*;
-// pub mod spin_one;   // contains a deadlock
+pub mod spin_one;
 
 mod token;
 mod types;
