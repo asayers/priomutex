@@ -96,21 +96,17 @@ impl<T> Mutex<T> {
     /// Attempts to take the lock.  Fails if another thread it already holding it, or is another
     /// thread is already waiting to take it.
     pub fn try_lock(&self) -> sync::TryLockResult<MutexGuard<T>> {
-        unimplemented!()
-        // let bk = self.bookkeeping.lock().unwrap();
-        // if bk.no_spinner {
-        //     // We took it!  The data must be free (soon).
-        //     match self.data.try_lock() {
-        //         Ok(guard) => Ok(MutexGuard(guard)),
-        //         Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
-        //         Err(TryLockError::Poisoned(pe)) => Err(TryLockError::Poisoned(
-        //             PoisonError::new(MutexGuard(pe.into_inner()))
-        //         )),
-        //     }
-        // } else {
-        //     // It's already taken
-        //     Err(TryLockError::WouldBlock)
-        // }
+        let bk = self.bookkeeping.lock().unwrap();
+        if !bk.no_spinner {
+            return Err(TryLockError::WouldBlock);
+        }
+        mem::drop(bk);
+        match self.data.try_lock() {
+            Ok(guard) => Ok(MutexGuard(guard)),
+            Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
+            Err(TryLockError::Poisoned(pe)) =>
+                Err(TryLockError::Poisoned(PoisonError::new(MutexGuard(pe.into_inner())))),
+        }
     }
 }
 
