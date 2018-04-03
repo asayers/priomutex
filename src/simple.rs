@@ -1,12 +1,14 @@
 use internal::*;
 use std::collections::BinaryHeap;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{self, PoisonError, TryLockError};
 
 /// A mutex which allows waiting threads to specify a priority.
 #[derive(Debug)]
 pub struct Mutex<T> {
     heap: sync::Mutex<BinaryHeap<PV<Prio, WakeToken>>>,
+    free: AtomicBool,  // there's noone holding it AND noone waiting to take it
     data: sync::Mutex<T>,
 }
 
@@ -15,6 +17,7 @@ impl<T> Mutex<T> {
     pub fn new(data: T) -> Mutex<T> {
         Mutex {
             heap: sync::Mutex::new(BinaryHeap::new()),
+            free: AtomicBool::from(true),
             data: sync::Mutex::new(data),
         }
     }
@@ -24,7 +27,7 @@ impl<T> Mutex<T> {
     ///
     /// Waiting threads are woken up in order of priority.  0 is the highest priority, 1 is
     /// second-highest, etc.
-    pub fn lock(&self, prio: usize) -> Result<MutexGuard<T>, PoisonError<MutexGuard<T>>> {
+    pub fn lock(&self, prio: usize) -> sync::LockResult<MutexGuard<T>> {
         // is it free?
         match self.try_lock() {
             Ok(guard) => return Ok(guard),  // mission accomplished!
@@ -38,20 +41,33 @@ impl<T> Mutex<T> {
             heap.push(PV { p: Prio::new(prio), v: wake_token });
         }
         sleep_token.sleep();
-        // ok, we've been explicitly woken up.  it *must* be free! (soon)
-        self.data.lock()
-            .map(|g| MutexGuard(g, self))
-            .map_err(|pe| PoisonError::new(MutexGuard(pe.into_inner(), self)))
+        // ok, we've been explicitly woken up.  It *must* be free!  (soon)
+        self.take_data_lock()
     }
 
     /// Attempts to take the lock.  If another thread is holding it, this function returns `None`.
     pub fn try_lock(&self) -> sync::TryLockResult<MutexGuard<T>> {
-        self.data.try_lock().map(|guard| MutexGuard(guard, self)).map_err(|tle| match tle {
-            TryLockError::WouldBlock => TryLockError::WouldBlock,
-            TryLockError::Poisoned(pe) => TryLockError::Poisoned(
-                PoisonError::new(MutexGuard(pe.into_inner(), self))
-            ),
-        })
+        if self.free.compare_and_swap(true, false, Ordering::SeqCst) {
+            // We took it!  The data must be free (soon).
+            self.take_data_lock().map_err(TryLockError::Poisoned)
+        } else {
+            // It's already taken
+            Err(TryLockError::WouldBlock)
+        }
+    }
+
+    /// Spin waits until the data lock becomes free.  Careful: make sure you're the next thread in
+    /// line before calling this!
+    fn take_data_lock(&self) -> sync::LockResult<MutexGuard<T>> {
+        loop {
+            match self.data.try_lock() {
+                Ok(guard) => return Ok(MutexGuard(guard, self)),
+                Err(TryLockError::WouldBlock) => { /* loop */ }
+                Err(TryLockError::Poisoned(pe)) => return Err(
+                    PoisonError::new(MutexGuard(pe.into_inner(), self))
+                ),
+            }
+        }
     }
 }
 
@@ -69,7 +85,13 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     /// This function performs no syscalls.
     fn drop(&mut self) {
         let mut heap = self.1.heap.lock().unwrap();
-        if let Some(x) = heap.pop() { x.v.wake(); }  // wake the next thread
+        if let Some(x) = heap.pop() {
+            // wake the next thread
+            x.v.wake();
+        } else {
+            // release the lock
+            self.1.free.store(true, Ordering::SeqCst);
+        }
     }
 }
 

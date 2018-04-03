@@ -1,8 +1,11 @@
 /*!
 A mutex where waiting threads specify a priority.
 
-Exactly like `std::sync::Mutex`, except that `lock` takes a priority (integer, 0 is high).  When
+Exactly like `std::sync::Mutex`, except that `lock` takes an integer priority (0 is high).  When
 the mutex is released, the thread which gave the highest priority will take the lock.
+
+**Status**:  As far as I can tell it's correct, although not particularly fast (releasing the lock
+takes 3-4μs on my machine).
 
 ```
 # extern crate rand;

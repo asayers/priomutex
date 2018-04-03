@@ -59,7 +59,6 @@ fn test() {
 
 // Check that the releasing thread doesn't have an unfair advantage in re-taking
 #[test]
-#[should_panic]
 fn test_no_unfair_advantage() {
     let m1 = Arc::new(Mutex::new(0));
     let m2 = m1.clone();
