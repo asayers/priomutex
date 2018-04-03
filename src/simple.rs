@@ -16,7 +16,7 @@ pub struct Mutex<T> {
 // dropping it.
 #[derive(Debug)]
 struct Bookkeeping {
-    heap: BinaryHeap<PV<Prio, WakeToken>>,
+    heap: BinaryHeap<PV<usize, WakeToken>>,
     free: bool,  // there's noone holding it AND noone waiting to take it
 }
 
@@ -43,7 +43,7 @@ impl<T> Mutex<T> {
         }
         // no. let's sleep
         let (sleep_token, wake_token) = create_tokens();
-        bk.heap.push(PV { p: Prio::new(prio), v: wake_token });
+        bk.heap.push(PV { p: prio, v: wake_token });
         mem::drop(bk);
         sleep_token.sleep();
         // ok, we've been explicitly woken up.  It *must* be free!  (soon)

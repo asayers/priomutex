@@ -38,8 +38,6 @@ mem::drop(guard);       // go go go!
 ```
 */
 
-extern crate fnv;
-
 mod simple; pub use simple::*;
 // pub mod spin_one;   // contains a deadlock
 pub mod internal;

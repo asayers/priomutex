@@ -8,34 +8,11 @@ Internals are exposed for the sake of interest only.  The usual caveats apply:
 * The documentation may be inaccurate
 
 */
-use fnv::FnvHasher;
+
 use std::cmp::Ordering;
-use std::hash::{Hash,Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicBool};
 use std::thread::{self, Thread};
-
-/// Prio guarantees a *total* order, even though the values provided by the user might only be
-/// partially ordered.  It does this by also comparing on ThreadId.
-///
-/// Assumptions: only one Prio per thread; no hash collisions.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Prio {
-    prio: usize,
-    thread_hash: u64,
-}
-
-impl Prio {
-    pub fn new(prio: usize) -> Prio {
-        let mut s = FnvHasher::default();
-        thread::current().id().hash(&mut s);
-        Prio {
-            prio: prio,
-            thread_hash: s.finish(),
-        }
-    }
-}
-
 
 /// A value `V` with a priority `P`
 #[derive(Debug, Clone)]
