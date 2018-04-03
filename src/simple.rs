@@ -50,7 +50,8 @@ impl<T> Mutex<T> {
         self.spin_lock_data()
     }
 
-    /// Attempts to take the lock.  If another thread is holding it, this function returns `None`.
+    /// Attempts to take the lock.  Fails if another thread it already holding it, or is another
+    /// thread is already waiting to take it.
     pub fn try_lock(&self) -> sync::TryLockResult<MutexGuard<T>> {
         let mut bk = self.bookkeeping.lock().unwrap();
         if bk.free {
@@ -88,8 +89,6 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     ///
     /// If any threads are ready to take the mutex (ie. are currently blocked calling `lock`), then
     /// the one with the highest priority will receive it; if not, the mutex will just be freed.
-    ///
-    /// This function performs no syscalls.
     fn drop(&mut self) {
         let mut bk = self.1.bookkeeping.lock().unwrap();
         if let Some(x) = bk.heap.pop() {
