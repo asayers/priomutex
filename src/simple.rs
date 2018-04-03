@@ -1,5 +1,6 @@
 use internal::*;
 use std::collections::BinaryHeap;
+use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::sync::{self, PoisonError, TryLockError};
 
@@ -43,7 +44,7 @@ impl<T> Mutex<T> {
         // no. let's sleep
         let (sleep_token, wake_token) = create_tokens();
         bk.heap.push(PV { p: Prio::new(prio), v: wake_token });
-        ::std::mem::drop(bk);
+        mem::drop(bk);
         sleep_token.sleep();
         // ok, we've been explicitly woken up.  It *must* be free!  (soon)
         self.spin_lock_data()
@@ -68,7 +69,7 @@ impl<T> Mutex<T> {
         loop {
             match self.data.try_lock() {
                 Ok(guard) => return Ok(MutexGuard(guard, self)),
-                Err(TryLockError::WouldBlock) => { /* loop */ }
+                Err(TryLockError::WouldBlock) => sync::atomic::spin_loop_hint(),
                 Err(TryLockError::Poisoned(pe)) => return Err(
                     PoisonError::new(MutexGuard(pe.into_inner(), self))
                 ),
