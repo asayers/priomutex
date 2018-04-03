@@ -7,13 +7,17 @@ when it's freed, the one which gave the highest priorty will recieve it.
 
     impl<T> Mutex<T> {
         fn new(data: T) -> Mutex<T>;
-        fn lock(&self, prio: usize) -> MutexGuard<T>;
-        fn try_lock(&self) -> Option<MutexGuard<T>>;
+        fn lock(&self, prio: usize) -> LockResult<MutexGuard<T>>;
+        fn try_lock(&self) -> TryLockResult<MutexGuard<T>>;
     }
 
     impl<T> Drop for MutexGuard<T>;      // Releases the lock
     impl<T> Deref for MutexGuard<T>;     // For accessing your data
     impl<T> DerefMut for MutexGuard<T>;  // For accessing your data
+
+This crate also includes a high-performance variant in the spin_once module,
+which spins the highest-priority waiting thread.  This makes releasing the
+mutex very fast, because it never needs to do any syscalls.
 
 Licence
 -------
