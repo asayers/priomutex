@@ -1,6 +1,6 @@
 [package]
 name = "priomutex"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Alex Sayers <alex.sayers@gmail.com>"]
 description = "A mutex where waiting threads specify a priority"
 documentation = "https://docs.rs/priomutex/"
