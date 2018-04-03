@@ -11,34 +11,31 @@ use std::time::*;
 #[test]
 fn test_in_order_locking() {
     const N: usize = 10;
+    let mut rng = thread_rng();
+    let mut prios: Vec<usize> = (0..N).map(|_| rng.gen::<usize>()).collect();
 
-    let m = Arc::new(Mutex::new(Vec::new()));
-    let guard = m.lock(0).unwrap();
+    let mutex = Arc::new(Mutex::new(Vec::new()));
+    let guard = mutex.lock(0).unwrap();
 
     let mut tids = Vec::new();
-    for _ in 0..N {
-        let m = m.clone();
+    for &prio in prios.iter() {
+        let mutex = mutex.clone();
         tids.push(thread::spawn(move || {
-            let mut rng = thread_rng();
-            let prio = rng.gen::<usize>();        // generate a random priority
-            let mut data = m.lock(prio).unwrap(); // wait on the mutex
+            let mut data = mutex.lock(prio).unwrap(); // wait on the mutex
             data.push(prio);                      // push priority onto the list
         }));
     }
 
     // Give the threads time to spawn and wait on the mutex
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(1000));
     mem::drop(guard);             // go go go!
 
     for t in tids { t.join().unwrap(); }   // wait until they've all modified the mutex
 
-    // Check that every thread pushed an element
-    let d1 = m.lock(0).unwrap();
-    assert_eq!(d1.len(), N);
-
     // Check that the threads were woken in priority order
-    let mut d2 = d1.clone(); d2.sort();
-    assert_eq!(*d1, d2);
+    prios.sort();
+    let prios2 = mutex.lock(0).unwrap();
+    assert_eq!(prios, *prios2);
 }
 
 #[test]
