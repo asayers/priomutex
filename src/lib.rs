@@ -40,4 +40,22 @@ mem::drop(guard);       // go go go!
 
 mod simple; pub use simple::*;
 // pub mod spin_one;   // contains a deadlock
-pub mod internal;
+
+mod token;
+mod types;
+
+pub mod internals {
+    /*!
+    Internals.  Not meant for consumption.
+
+    Internals are exposed for the sake of interest only.  The usual caveats apply:
+
+    * No guarantees about API stability
+    * The user may need to enforce invariants
+    * The documentation may be inaccurate
+
+    */
+
+    pub use token::*;
+    pub use types::*;
+}

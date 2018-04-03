@@ -1,8 +1,9 @@
-use internal::*;
 use std::collections::BinaryHeap;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::sync::{self, PoisonError, TryLockError};
+use token::*;
+use types::*;
 
 /// A mutex which allows waiting threads to specify a priority.
 #[derive(Debug)]

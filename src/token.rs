@@ -1,40 +1,11 @@
-/*!
-Internals.  Not meant for consumption.
-
-Internals are exposed for the sake of interest only.  The usual caveats apply:
-
-* No guarantees about API stability
-* The user may need to enforce invariants
-* The documentation may be inaccurate
-
-*/
-
-use std::cmp::Ordering;
 use std::sync::Arc;
 use std::sync::atomic::{self, AtomicBool};
 use std::thread::{self, Thread};
 
-/// A value `V` with a priority `P`
-#[derive(Debug, Clone)]
-pub struct PV<P,V> {
-    pub p: P,
-    pub v: V,
-}
-
-impl<P:PartialEq,V> PartialEq for PV<P,V> {
-    fn eq(&self, other: &PV<P,V>) -> bool { other.p == self.p }
-}
-
-impl<P:Eq,V> Eq for PV<P,V> {}
-
-impl<P:PartialOrd,V> PartialOrd for PV<P,V> {
-    fn partial_cmp(&self, other: &PV<P,V>) -> Option<Ordering> { other.p.partial_cmp(&self.p) }
-}
-
-impl<P:Ord,V> Ord for PV<P,V> {
-    fn cmp(&self, other: &PV<P,V>) -> Ordering { other.p.cmp(&self.p) }
-}
-
+/// Create a linked pair of tokens.
+///
+/// Note that the `SleepToken` is valid for the current thread only.  Don't send it to another
+/// thread!
 pub fn create_tokens() -> (SleepToken, WakeToken) {
     let token = Arc::new(Token {
         thread: thread::current(),
@@ -48,9 +19,14 @@ struct Token {
     thread: Thread,
     is_woken: AtomicBool,
 }
+
+/// A token for putting the current thread to sleep.
+///
 /// Note: This is NOT `Send` or `Sync`!  (Negative traits are currently unstable...)
 #[derive(Debug)]
 pub struct SleepToken(Arc<Token>);
+
+/// A token for waking a thread
 #[derive(Debug)]
 pub struct WakeToken(Arc<Token>);
 
@@ -60,7 +36,8 @@ pub struct WakeToken(Arc<Token>);
 // impl !Sync for SleepToken {}
 
 impl SleepToken {
-    /// Sleep the current thread until the corresponding `WakeToken` is signalled.
+    /// Sleep the current thread until the corresponding `WakeToken` is signalled.  If the
+    /// `WakeToken` has *already* been signalled, this function returns immediately.
     pub fn sleep(self) {
         while !self.0.is_woken.load(atomic::Ordering::SeqCst) {
             thread::park();
