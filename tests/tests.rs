@@ -39,7 +39,7 @@ fn test_in_order_locking() {
 }
 
 #[test]
-fn test() {
+fn test_each_takes_once() {
     let h = Arc::new(Mutex::new(vec![]));
     let mut tids = vec![];
     for i in 0..5 {
@@ -51,7 +51,6 @@ fn test() {
         }));
     }
     for tid in tids { tid.join().unwrap(); }
-    println!("{:?}", *h.lock(9).unwrap());
 }
 
 // Check that the releasing thread doesn't have an unfair advantage in re-taking
@@ -74,6 +73,21 @@ fn test_no_unfair_advantage() {
             panic!("try_lock succeeded when there was a thread waiting!");
         }
     }
+}
+
+#[test]
+fn test_single_thread() {
+    let mutex = Arc::new(Mutex::new(0u8));
+    let x = mutex.lock(0).unwrap();
+    mem::drop(x);
+    let x = mutex.lock(1).unwrap();
+    mem::drop(x);
+    let x = mutex.lock(2).unwrap();
+    mem::drop(x);
+    let x = mutex.lock(3).unwrap();
+    mem::drop(x);
+    let x = mutex.lock(4).unwrap();
+    mem::drop(x);
 }
 
 /*
@@ -106,21 +120,6 @@ fn test_thread_pool_eq() {
     thread::spawn(move|| { let guard = h2.lock(0).unwrap(); println!("got mutex: t1"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
     thread::spawn(move|| { let guard = h1.lock(0).unwrap(); println!("got mutex: t0"); thread::sleep(Duration::from_millis(10)); mem::drop(guard); });
     thread::sleep(Duration::from_millis(100));
-}
-
-#[test]
-fn test_thread_pool_1() {
-    let mutex = Arc::new(Mutex::new(0u8));
-    let x = mutex.lock(0).unwrap();
-    x.release();
-    let x = mutex.lock(1).unwrap();
-    x.release();
-    let x = mutex.lock(2).unwrap();
-    x.release();
-    let x = mutex.lock(3).unwrap();
-    x.release();
-    let x = mutex.lock(4).unwrap();
-    x.release();
 }
 
 */
