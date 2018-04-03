@@ -1,23 +1,29 @@
 use internal::*;
 use std::collections::BinaryHeap;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{self, PoisonError, TryLockError};
 
 /// A mutex which allows waiting threads to specify a priority.
 #[derive(Debug)]
 pub struct Mutex<T> {
-    heap: sync::Mutex<BinaryHeap<PV<Prio, WakeToken>>>,
-    free: AtomicBool,  // there's noone holding it AND noone waiting to take it
+    bookkeeping: sync::Mutex<Bookkeeping>,
     data: sync::Mutex<T>,
+}
+
+// Essentially all operations on `Mutex` are done while holding the bookkeeping lock.  This means
+// that it's impossible that eg. one thread will be trying to lock the mutex while another one is
+// dropping it.
+#[derive(Debug)]
+struct Bookkeeping {
+    heap: BinaryHeap<PV<Prio, WakeToken>>,
+    free: bool,  // there's noone holding it AND noone waiting to take it
 }
 
 impl<T> Mutex<T> {
     /// Creates a new mutex in an unlocked state ready for use.
     pub fn new(data: T) -> Mutex<T> {
         Mutex {
-            heap: sync::Mutex::new(BinaryHeap::new()),
-            free: AtomicBool::from(true),
+            bookkeeping: sync::Mutex::new(Bookkeeping { heap: BinaryHeap::new(), free: true }),
             data: sync::Mutex::new(data),
         }
     }
@@ -28,28 +34,28 @@ impl<T> Mutex<T> {
     /// Waiting threads are woken up in order of priority.  0 is the highest priority, 1 is
     /// second-highest, etc.
     pub fn lock(&self, prio: usize) -> sync::LockResult<MutexGuard<T>> {
-        // is it free?
-        match self.try_lock() {
-            Ok(guard) => return Ok(guard),  // mission accomplished!
-            Err(TryLockError::WouldBlock) => {} // carry on...
-            Err(TryLockError::Poisoned(e)) => return Err(e),
+        let mut bk = self.bookkeeping.lock().unwrap();
+        if bk.free {
+            // We took it!  The data must be free (soon).
+            bk.free = false;
+            return self.spin_lock_data();
         }
         // no. let's sleep
         let (sleep_token, wake_token) = create_tokens();
-        {
-            let mut heap = self.heap.lock().unwrap();
-            heap.push(PV { p: Prio::new(prio), v: wake_token });
-        }
+        bk.heap.push(PV { p: Prio::new(prio), v: wake_token });
+        ::std::mem::drop(bk);
         sleep_token.sleep();
         // ok, we've been explicitly woken up.  It *must* be free!  (soon)
-        self.take_data_lock()
+        self.spin_lock_data()
     }
 
     /// Attempts to take the lock.  If another thread is holding it, this function returns `None`.
     pub fn try_lock(&self) -> sync::TryLockResult<MutexGuard<T>> {
-        if self.free.compare_and_swap(true, false, Ordering::SeqCst) {
+        let mut bk = self.bookkeeping.lock().unwrap();
+        if bk.free {
             // We took it!  The data must be free (soon).
-            self.take_data_lock().map_err(TryLockError::Poisoned)
+            bk.free = false;
+            self.spin_lock_data().map_err(TryLockError::Poisoned)
         } else {
             // It's already taken
             Err(TryLockError::WouldBlock)
@@ -58,7 +64,7 @@ impl<T> Mutex<T> {
 
     /// Spin waits until the data lock becomes free.  Careful: make sure you're the next thread in
     /// line before calling this!
-    fn take_data_lock(&self) -> sync::LockResult<MutexGuard<T>> {
+    fn spin_lock_data(&self) -> sync::LockResult<MutexGuard<T>> {
         loop {
             match self.data.try_lock() {
                 Ok(guard) => return Ok(MutexGuard(guard, self)),
@@ -84,13 +90,13 @@ impl<'a, T> Drop for MutexGuard<'a, T> {
     ///
     /// This function performs no syscalls.
     fn drop(&mut self) {
-        let mut heap = self.1.heap.lock().unwrap();
-        if let Some(x) = heap.pop() {
+        let mut bk = self.1.bookkeeping.lock().unwrap();
+        if let Some(x) = bk.heap.pop() {
             // wake the next thread
             x.v.wake();
         } else {
             // release the lock
-            self.1.free.store(true, Ordering::SeqCst);
+            bk.free = true;
         }
     }
 }

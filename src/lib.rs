@@ -5,7 +5,7 @@ Exactly like `std::sync::Mutex`, except that `lock` takes an integer priority (0
 the mutex is released, the thread which gave the highest priority will take the lock.
 
 **Status**:  As far as I can tell it's correct, although not particularly fast (releasing the lock
-takes 3-4μs on my machine).
+takes 3-4μs on my machine).  Poisoning is untested.
 
 ```
 # extern crate rand;
