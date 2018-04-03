@@ -1,7 +1,7 @@
 extern crate priomutex;
 extern crate env_logger;
 
-use priomutex::*;
+use priomutex::spin_one::*;
 use std::io::{stdin, BufRead};
 use std::mem;
 use std::sync::{mpsc, Arc};

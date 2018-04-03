@@ -3,8 +3,8 @@ A high-performance variant of priomutex.
 
 This mutex is very similar to the one in the root of the crate, except that the next-in-line thread
 busy-waits.  This means that dropping the `MutexGuard` never requires any syscalls, and takes
-~200ns on my machine (as opposed to ~3000ns for the starndard priomutex).  No matter how many
-threads are waiting on your mutex, it's guaranteed that only one will be busy-waiting at any time.
+100-200ns on my machine (20x faster than the standard priomutex).  No matter how many threads are
+waiting on your mutex, it's guaranteed that only one will be busy-waiting at any time.
 
 Suppose thread 1 has the lock and thread 2 is busy-waiting for it.  Now thread 3 tries to lock the
 mutex with a higher priority then thread 2.  Thread 3 will now busy-wait, while thread 2 goes to
@@ -51,15 +51,16 @@ impl<T> Mutex<T> {
     /// second-highest, etc.
     pub fn lock(&self, prio: usize) -> sync::LockResult<MutexGuard<T>> {
         let mut bk = self.bookkeeping.lock().unwrap();
-        let (sleep_token, wake_token) = create_tokens();
-        bk.heap.push(PV { p: prio, v: wake_token });
         if bk.no_spinner {
             // We're the spinner now
             bk.no_spinner = false;
-            bk.heap.pop().unwrap().v.wake();
+            mem::drop(bk);
+        } else {
+            let (sleep_token, wake_token) = create_tokens();
+            bk.heap.push(PV { p: prio, v: wake_token });
+            mem::drop(bk);
+            sleep_token.sleep();
         }
-        mem::drop(bk);
-        sleep_token.sleep();
 
         let guard = loop {
             // Our WakeToken has been signalled.  That means we're the spinner now!
@@ -70,8 +71,6 @@ impl<T> Mutex<T> {
                     return Err(PoisonError::new(MutexGuard(pe.into_inner()))),
             }
 
-            // sync::atomic::spin_loop_hint();
-
             let mut bk = self.bookkeeping.lock().unwrap();
             let (sleep_token, wake_token) = create_tokens();
             bk.heap.push(PV { p: prio, v: wake_token });
@@ -79,6 +78,7 @@ impl<T> Mutex<T> {
             mem::drop(bk);
             sleep_token.sleep();
 
+            sync::atomic::spin_loop_hint();
         };
 
         // We took the lock
