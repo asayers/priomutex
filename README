@@ -15,9 +15,26 @@ when it's freed, the one which gave the highest priorty will recieve it.
     impl<T> Deref for MutexGuard<T>;     // For accessing your data
     impl<T> DerefMut for MutexGuard<T>;  // For accessing your data
 
-This crate also includes a high-performance variant in the spin_once module,
+This crate also includes a high-performance variant in the spin_one module,
 which spins the highest-priority waiting thread.  This makes releasing the
 mutex very fast, because it never needs to do any syscalls.
+
+
+Status
+------
+
+There is no unsafe code used in either variant, so there's no possibility of
+two threads holding the mutex at the same time.  Bugs may lead to deadlocks or
+non-priority-order locking, however.  I'm not currently aware of any such bugs.
+
+Benchmarking locking time is difficult.  Release time, however, can be reliably
+measured:
+
+    simple:   2887 ns
+    spin_one:  248 ns
+
+(Intel Core i7-4790K CPU @ 4.00GHz, max_cstate = 0)
+
 
 Licence
 -------
