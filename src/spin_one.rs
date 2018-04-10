@@ -16,6 +16,7 @@ use std::collections::BinaryHeap;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::sync::{self, PoisonError, TryLockError};
+use std::thread;
 use token::*;
 use types::*;
 
@@ -65,8 +66,10 @@ impl<T> Mutex<T> {
         let guard = loop {
             // Our WakeToken has been signalled.  That means we're the spinner now!
             match self.data.try_lock() {
-                Ok(guard) => break MutexGuard(guard),
-                Err(TryLockError::WouldBlock) => { /* loop */ }
+                Ok(guard) =>
+                    break MutexGuard(guard),
+                Err(TryLockError::WouldBlock) =>
+                    thread::yield_now(),
                 Err(TryLockError::Poisoned(pe)) =>
                     return Err(PoisonError::new(MutexGuard(pe.into_inner()))),
             }
@@ -77,8 +80,6 @@ impl<T> Mutex<T> {
             bk.heap.pop().unwrap().v.wake();
             mem::drop(bk);
             sleep_token.sleep();
-
-            sync::atomic::spin_loop_hint();
         };
 
         // We took the lock

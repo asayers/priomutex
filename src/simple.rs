@@ -2,6 +2,7 @@ use std::collections::BinaryHeap;
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::sync::{self, PoisonError, TryLockError};
+use std::thread;
 use token::*;
 use types::*;
 
@@ -70,11 +71,12 @@ impl<T> Mutex<T> {
     fn spin_lock_data(&self) -> sync::LockResult<MutexGuard<T>> {
         loop {
             match self.data.try_lock() {
-                Ok(guard) => return Ok(MutexGuard(guard, self)),
-                Err(TryLockError::WouldBlock) => sync::atomic::spin_loop_hint(),
-                Err(TryLockError::Poisoned(pe)) => return Err(
-                    PoisonError::new(MutexGuard(pe.into_inner(), self))
-                ),
+                Ok(guard) =>
+                    return Ok(MutexGuard(guard, self)),
+                Err(TryLockError::WouldBlock) =>
+                    thread::yield_now(),
+                Err(TryLockError::Poisoned(pe)) =>
+                    return Err(PoisonError::new(MutexGuard(pe.into_inner(), self))),
             }
         }
     }
